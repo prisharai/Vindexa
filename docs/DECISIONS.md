@@ -113,4 +113,71 @@ round trip (the irreducible cost of running the query) plus one non-blocking
 enqueue. No blocking I/O, no network, no LLM on the path. This is the
 pass-through baseline the Day 7 benchmark measures against.
 
+## 2026-06-20 — Day 2: parse + classify (observe-only)
+**Decision:** Built `engine/parser.py` and `engine/classifier.py` and wired the
+classification into the shadow-mode audit log. Everything is derived from the
+`pglast` AST — never string matching (§6) — and it's observe-only: we describe
+each statement, we don't decide on it yet.
+
+* **Parser:** `parse(sql)` returns a `ParseResult(statements, error)`, LRU-cached
+  (2048) on the raw SQL. It never raises onto the hot path — a syntax error
+  becomes `error=...` with empty statements, so the request path is exception-
+  free. Resolves the DESIGN.md "parse-cache strategy/eviction" open question:
+  plain bounded LRU keyed on SQL text.
+* **Classifier:** per-statement `StatementInfo` (kind, stmt_type, tables,
+  columns, has_where, unbounded_write, nested_dml, touches_system_catalog) plus a
+  `Classification` aggregate (statement_count, is_multi_statement, most-severe
+  kind, parse_error). Kind severity order OTHER < READ < WRITE < DDL < UNKNOWN;
+  a multi-statement batch takes its worst statement's kind.
+* **Tricky cases handled** (the §8 Day 2 list + anti-evasion extras): CTE names
+  excluded from real tables; `UPDATE...FROM` and sub-selects collect all tables;
+  comments stripped by the real parser; multi-statement detected; system-catalog
+  refs flagged (qualified `pg_catalog`/`information_schema` and unqualified
+  `pg_*`). Extras: **`nested_dml`** catches a write hidden under a non-write top
+  node (data-modifying CTE `WITH d AS (DELETE...) SELECT` — top node is a
+  `SelectStmt` but it's a WRITE); **`unbounded_write`** flags any UPDATE/DELETE
+  (top-level or nested) with no WHERE — exactly what Day 3 will block.
+* **Parse failures fail safe:** `kind=UNKNOWN` + the parser message, no
+  exception. UNKNOWN is the most-severe kind so writes fail closed downstream
+  (§4). Enforcement is Day 3; Day 2 only records it.
+
+**Latency/safety impact:** Adds parse + classify to the hot path. Measured on a
+realistic CTE/UPDATE...FROM/sub-select statement: **0.168 ms cold (parse + walk),
+~0.0001 ms warm (cache hit)** — ~30× under the §4 5 ms p99 budget cold, free when
+cached. Both `parse` and `classify` are LRU-cached on the SQL text. No I/O, no
+network, no blocking. The classification is added to the async audit entry only;
+it changes no behavior and the pass-through result is unchanged.
+
+## 2026-06-20 — Day 2 QA fixes (P1/P1/P2 from QA_REPORT.md)
+**Decision:** Fixed three issues from QA review of the Day 2 classifier/parser,
+each with a permanent regression test (§8 Day 8).
+
+* **P1a — side-effecting statements no longer fall through to `OTHER`.** The
+  classifier had a permissive `OTHER` fallback, so `DO`, `CALL`, `COPY` (incl.
+  `COPY ... PROGRAM` shell-out), `LOCK`, `VACUUM`, `REINDEX`, `REFRESH
+  MATERIALIZED VIEW`, `CREATE DATABASE`, `ALTER SYSTEM`, `EXECUTE`, etc. looked
+  as harmless as `BEGIN`. Replaced it with an explicit safe-utility allowlist
+  (`TransactionStmt`, `VariableSetStmt`, `VariableShowStmt`) → `OTHER`; every
+  other/unrecognized top-level node **fails closed to `DDL` severity**.
+  `UNKNOWN` stays reserved for parse failures. (`EXPLAIN` is intentionally not
+  on the allowlist — `EXPLAIN ANALYZE` actually executes; Day 3 can refine.)
+* **P1b — CTE filtering was scope-blind and could hide real tables.**
+  `_real_tables` removed any unqualified RangeVar whose name appeared in a single
+  global `cte_names` set, so a CTE in an inner subquery could suppress an outer
+  real table (`SELECT * FROM secret WHERE EXISTS (WITH secret AS (...) ...)`
+  returned no tables). Replaced with **scope-aware resolution**: each RangeVar is
+  suppressed only if an *ancestor* statement's `WITH` clause defines its name
+  (walked via the visitor's ancestor chain), and DML/MERGE **target relations are
+  protected by node identity** so a same-named CTE can never hide a write target.
+* **P2 — `parse()` could still raise on the hot path.** It caught only
+  `ParseError`, but `pglast.parse_sql` raises e.g. `UnicodeEncodeError` on lone
+  surrogates. Added a defensive `except Exception` that returns
+  `ParseResult(error=...)` so malformed input becomes `UNKNOWN` instead of an
+  exception — upholding the §4 non-raising-hot-path guarantee.
+
+**Latency/safety impact:** Pure-classification changes; no I/O added. P1b's
+per-RangeVar ancestor walk is negligible — cold classify still **0.167 ms (~30×
+under the 5 ms p99 budget)**, warm unchanged. All three fixes make the classifier
+*more* fail-closed (safer defaults), consistent with §4. 53 tests green.
+
 <!-- Append future decisions below this line. -->

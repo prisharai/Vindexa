@@ -31,6 +31,7 @@ import asyncpg
 from mcp.server.fastmcp import Context, FastMCP
 
 from engine.audit import AuditLog
+from engine.classifier import classify
 
 # --- Config (env-overridable; defaults match docker-compose.yml) -------------
 DB_DSN = os.environ.get(
@@ -75,6 +76,12 @@ class ShadowSession:
         rather than raised, so the agent gets a clear message and we still record
         the attempt in the corpus. Shadow mode never blocks -- only observes.
         """
+        # Structural classification (Day 2, observe-only): parse + classify on
+        # the hot path. Both are LRU-cached and pure in-memory; cold cost is
+        # ~0.1 ms, cached ~0. It informs nothing yet -- it's logged, not enforced
+        # (sec. 8 Day 2). classify() never raises (parse errors become data).
+        classification = classify(sql)
+
         started = time.perf_counter()
         status: str | None = None
         rows: list[dict[str, Any]] = []
@@ -105,6 +112,7 @@ class ShadowSession:
                 "rows_returned": len(rows),
                 "error": error,
                 "duration_ms": round(elapsed_ms, 3),
+                "classification": classification.to_dict(),
             }
         )
 
