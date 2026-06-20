@@ -54,4 +54,26 @@ for the no-blocking-I/O rule. `ruff`+`black` keep it clean from day one;
 **Latency/safety impact:** None directly. `asyncpg` chosen partly *for* the §4
 budget (async, no blocking I/O on the engine path).
 
+## 2026-06-20 — Day 0 seed crash diagnosed + fixed; smoke test closes Day 0
+**Decision:** Root-caused the stalled Day 0 seed and finished the slice. The
+init crashed mid-seed with `PANIC: could not fsync ... Input/output error`
+during the 2M-row `metric_sample` insert — **not** a SQL bug, but the Docker
+Desktop VM running out of disk while writing WAL (Pagila + the 3M-row
+`app_event` had already loaded). Fix: reclaimed ~3 GB of Docker build cache
+(`docker builder prune -af`), dropped the half-seeded volume
+(`docker compose down -v`), and re-seeded clean. Added `tests/test_smoke.py`,
+which connects via `asyncpg` and asserts real row counts for all four seeded
+tables, and filled in `README.md` with quickstart + reset instructions.
+**Why:** The init scripts only run on an empty data volume, so the partial seed
+was a silent trap — a re-`up` would have skipped seeding and left the large
+tables missing while looking healthy. The smoke test checks counts (not
+`assert True`) precisely so this failure mode is caught automatically; it skips
+gracefully when no DB is reachable so CI without Docker stays green. Chose the
+conservative cleanup (build cache + this project's volume only) over a global
+`docker system prune -af` to avoid touching unrelated images on the machine.
+**Latency/safety impact:** None on the request path (dev tooling + data only).
+Verified seed: film 1000, customer 599, app_event 3,000,000,
+metric_sample 2,000,000. Day 0 "Done when" now fully met:
+`docker compose up` → seeded Postgres, `pytest` green, README explains startup.
+
 <!-- Append future decisions below this line. -->
