@@ -5,12 +5,13 @@
 > design choice here conflicts with `CLAUDE.md`, `CLAUDE.md` wins — surface the
 > conflict rather than silently diverging.
 
-Status: **Day 3 complete — deterministic policy engine v1 (enforcing).** Built so
+Status: **Day 4 complete — blast-radius simulation (differentiator #1).** Built so
 far: Day 0 foundation, Day 1 pass-through MCP server + async shadow-mode audit
 log, Day 2 AST parser + classifier, Day 3 YAML-driven policy engine with
-structured rejections + red/green corpus, wired into the adapter (enforce /
-observe). Day 4 (blast-radius simulation) is next. Sections below describe the
-full intended shape; `simulate.py`, `undo.py`, `intent.py` are still stubs.
+structured rejections + red/green corpus, Day 4 gated EXPLAIN/precise blast-radius
+simulation with row-count thresholds (block / require-confirmation) wired into the
+adapter. Day 5 (reversibility / instant undo) is next. `undo.py` and `intent.py`
+are still stubs.
 
 ---
 
@@ -113,8 +114,10 @@ Do not let the build collapse into "just another rule engine that blocks
   column allowlist needs schema-aware `SELECT *` expansion. **Deferred to Day 10
   read-side guardrails.**
 - Undo record format and storage location (separate schema vs sidecar).
-  **Next-ish, Day 5.**
-- Blast-radius simulation gating + timeouts. **Next, Day 4.**
+  **Next, Day 5.**
+- ~~Blast-radius simulation gating + timeouts.~~ **Resolved (Day 4):** gated to
+  single-statement writes, opt-in, `statement_timeout`+`lock_timeout`,
+  EXPLAIN-estimate + BEGIN/ROLLBACK-exact, thresholds block / require-confirm.
 - System-catalog detection currently flags unqualified `pg_*` by name; revisit
   if a non-catalog table legitimately starts with `pg_` (unlikely).
 

@@ -66,3 +66,15 @@ tables:
 # CREATE INDEX/...) are explicitly permitted. Empty = no DDL allowed anywhere.
 ddl:
   allow: []
+
+# Blast-radius simulation (differentiator #1). OFF the normal path -- only a
+# single-statement risky write is ever simulated, and only when enforcing.
+# `precise` runs BEGIN/<stmt>/ROLLBACK for an exact affected-row count (takes
+# locks, hard time-boxed); set false for EXPLAIN-estimate only (no locks).
+simulation:
+  enabled: true
+  precise: true
+  statement_timeout_ms: 1000
+  lock_timeout_ms: 200
+  confirm_over_rows: 1000     # writes touching >1k rows need explicit confirmation
+  block_over_rows: 100000     # writes touching >100k rows are blocked outright

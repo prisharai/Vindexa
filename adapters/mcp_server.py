@@ -33,7 +33,8 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from engine.audit import AuditLog
 from engine.classifier import classify
-from engine.policy import Policy, evaluate
+from engine.policy import Policy, apply_blast_radius, evaluate
+from engine.simulate import is_risky_write, simulate
 
 # --- Config (env-overridable; defaults match docker-compose.yml) -------------
 DB_DSN = os.environ.get(
@@ -83,16 +84,17 @@ class ShadowSession:
         *,
         stated_task: str | None = None,
         agent: str | None = None,
+        confirm: bool = False,
     ) -> dict[str, Any]:
-        """Apply policy, then (if allowed) execute and return the result.
+        """Apply policy + (gated) simulation, then execute and return the result.
 
-        Result shape:
-        ``{"status", "rows", "row_count", "error", "blocked", "violations"}``.
-        ``status`` is the Postgres command tag (``"SELECT 2"``, ``"UPDATE 5"``,
-        ``"CREATE TABLE"`` -- carries the affected-row count for writes). When a
-        statement is blocked, ``blocked=True`` and ``violations`` lists the
-        machine-readable reasons so the agent can self-correct; the database is
-        never touched.
+        Result shape: ``{"status", "rows", "row_count", "error", "blocked",
+        "violations", "requires_confirmation", "simulation"}``. When a statement
+        is blocked, ``blocked=True`` and ``violations`` explains why (the DB is
+        never touched). When a risky write's blast radius crosses the confirm
+        threshold, ``requires_confirmation=True`` with the ``simulation`` measured
+        -- the agent must re-issue with ``confirm=True`` to proceed. ``confirm``
+        never overrides a hard block (e.g. blast radius over the block limit).
         """
         # Parse + classify on the hot path -- both LRU-cached, pure, ~0.1 ms cold.
         classification = classify(sql)
@@ -109,6 +111,22 @@ class ShadowSession:
         # traffic through (Policy also rejects invalid modes at load time).
         enforce = self._policy is not None and self._policy.mode != "observe"
 
+        # Blast-radius simulation (Day 4) -- OFF the normal path: only a risky
+        # write, only when enforcing and enabled. May escalate the decision to
+        # blocked (over the block limit) or to requires_confirmation (sec. 4).
+        if (
+            decision is not None
+            and decision.allowed
+            and enforce
+            and self._policy.simulation.enabled
+            and is_risky_write(classification)
+        ):
+            async with self._pool.acquire() as sim_conn:
+                sim = await simulate(
+                    sim_conn, sql, classification, self._policy.simulation
+                )
+            decision = apply_blast_radius(decision, sim, self._policy.simulation)
+
         # Blocked + enforcing: reject without going near the database.
         if decision is not None and not decision.allowed and enforce:
             self._audit.record(
@@ -119,6 +137,7 @@ class ShadowSession:
                     "sql": sql,
                     "blocked": True,
                     "violations": [v.to_dict() for v in decision.violations],
+                    "simulation": decision.simulation,
                     "classification": classification.to_dict(),
                 }
             )
@@ -129,6 +148,39 @@ class ShadowSession:
                 "error": None,
                 "blocked": True,
                 "violations": [v.to_dict() for v in decision.violations],
+                "requires_confirmation": False,
+                "simulation": decision.simulation,
+            }
+
+        # Allowed but gated: a risky write whose blast radius needs confirmation.
+        # Hold it until the agent re-issues with confirm=True. Never touch the DB.
+        if (
+            decision is not None
+            and decision.requires_confirmation
+            and enforce
+            and not confirm
+        ):
+            self._audit.record(
+                {
+                    "event": "query",
+                    "agent": agent,
+                    "stated_task": stated_task,
+                    "sql": sql,
+                    "blocked": False,
+                    "requires_confirmation": True,
+                    "simulation": decision.simulation,
+                    "classification": classification.to_dict(),
+                }
+            )
+            return {
+                "status": None,
+                "rows": [],
+                "row_count": 0,
+                "error": None,
+                "blocked": False,
+                "violations": [],
+                "requires_confirmation": True,
+                "simulation": decision.simulation,
             }
 
         # Allowed, or observe-mode: decide what actually runs. Only *enforcing*
@@ -186,6 +238,8 @@ class ShadowSession:
             "error": error,
             "blocked": False,
             "violations": [],
+            "requires_confirmation": False,
+            "simulation": decision.simulation if decision is not None else None,
         }
 
 
@@ -231,21 +285,28 @@ async def run_query(
     sql: str,
     ctx: Context,
     stated_task: str | None = None,
+    confirm: bool = False,
 ) -> dict[str, Any]:
     """Run a SQL statement against the database and return its result.
 
     The statement is parsed, classified, and checked against the deterministic
     policy. If it's blocked, the result has ``blocked=True`` and a ``violations``
     list explaining why and how to fix it -- the database is not touched. If it's
-    allowed it runs (a read may come back with an injected LIMIT). ``stated_task``
-    is the agent's description of what it's trying to do -- captured now to power
-    intent-mismatch detection later (sec. 10); it is advisory and does not affect
-    the deterministic decision.
+    allowed it runs (a read may come back with an injected LIMIT).
+
+    A risky write may be simulated first to measure its blast radius. If that
+    exceeds the confirm threshold the result has ``requires_confirmation=True``
+    and a ``simulation`` summary (e.g. "would affect 2.3M rows"); re-issue with
+    ``confirm=True`` to proceed. ``stated_task`` is the agent's description of
+    what it's trying to do -- captured for intent-mismatch detection later
+    (sec. 10); advisory, it does not affect the deterministic decision.
     """
     app: AppContext = ctx.request_context.lifespan_context
     # MCP gives us a stable client/session id; use it as the agent identity.
     agent = getattr(ctx, "client_id", None) or ctx.request_id
-    return await app.session.run_query(sql, stated_task=stated_task, agent=agent)
+    return await app.session.run_query(
+        sql, stated_task=stated_task, agent=agent, confirm=confirm
+    )
 
 
 def main() -> None:

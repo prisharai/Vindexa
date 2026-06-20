@@ -266,4 +266,45 @@ already-cached parse walk: classify cold measured **0.14 ms** (~36× under the
 Corpus now **23/23 red blocked (with expected codes), 12/12 green allowed**;
 119 tests green.
 
+## 2026-06-20 — Day 4: blast-radius simulation (differentiator #1)
+**Decision:** Built `engine/simulate.py` and wired gated simulation into the
+decision flow. Two measurement paths:
+* **Estimate (cheap):** `EXPLAIN (FORMAT JSON) <stmt>` -> planner `Plan Rows` +
+  `Total Cost`. No execution, no row locks. (Observed it can be wildly off —
+  estimated 0 where the real count was 664 — which is exactly why precise
+  exists.)
+* **Precise (exact):** `BEGIN; SET LOCAL statement_timeout/lock_timeout; <stmt>;
+  ROLLBACK`. Executes the write to read the exact affected-row count off the
+  command tag, then rolls back. Hard time-boxed; aborts cleanly on
+  `QueryCanceled`/`LockNotAvailable`; always rolls back in a `finally`.
+
+* **Gating (sec. 4):** `is_risky_write` = single-statement WRITE only. Reads,
+  DDL, multi-statement, and routine traffic are never simulated (verified: reads
+  add no DB round-trip). Simulation is opt-in (`SimulationConfig.enabled`,
+  default OFF in the library; ON in the shipped `default.yaml`) and runs only
+  when enforcing.
+* **Thresholds (`apply_blast_radius`, pure):** over `block_over_rows` -> hard
+  block (`BLAST_RADIUS_EXCEEDED`); over `confirm_over_rows` -> allowed but
+  `requires_confirmation`; a timeout -> `requires_confirmation` (couldn't bound
+  the impact). Block always wins over confirm.
+* **Confirmation path:** the adapter holds a confirm-gated write (returns
+  `requires_confirmation=True` + the `simulation` summary, DB untouched); the
+  agent re-issues with `confirm=True` to proceed. `confirm` never overrides a
+  hard block.
+* **Honest caveats surfaced & documented (sec. 11):** the precise path executes
+  before rolling back, so non-transactional side effects still happen (sequence
+  `nextval`, external triggers, `NOTIFY`); it briefly takes the real write's
+  locks; very large writes may hit the statement timeout and escalate to
+  confirmation rather than returning an exact count. Bonus: precise simulation
+  also reveals writes that *would fail* — e.g. a `DELETE FROM rental` surfaced a
+  foreign-key violation before any commit (captured as a regression test).
+
+**Latency/safety impact:** Simulation is off the normal path by construction —
+only risky writes, only when enforcing, time-boxed. `apply_blast_radius` is pure.
+`SimulationConfig` lives in `Policy` (loaded from YAML at startup). 136 tests
+green. The precise path is the most lock-sensitive code in the project; its
+guards (statement/lock timeout + unconditional rollback) are the load-bearing
+safety and are directly tested (clean abort + table-untouched + connection still
+usable).
+
 <!-- Append future decisions below this line. -->

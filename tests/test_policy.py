@@ -9,7 +9,15 @@ import pytest
 
 from engine import classifier, parser
 from engine.classifier import classify
-from engine.policy import Policy, ReasonCode, decide, evaluate
+from engine.policy import (
+    Decision,
+    Policy,
+    ReasonCode,
+    apply_blast_radius,
+    decide,
+    evaluate,
+)
+from engine.simulate import SimulationConfig, SimulationResult
 
 
 @pytest.fixture(autouse=True)
@@ -226,3 +234,57 @@ def test_default_policy_file_loads():
     assert p.max_rows_read == 1000
     assert "film" in p.allowed_tables
     assert "password" in p.blocked_columns["staff"]
+    assert p.simulation.enabled is True
+    assert p.simulation.block_over_rows == 100000
+
+
+# --- Blast-radius thresholds (apply_blast_radius, pure) ----------------------
+
+_ALLOWED = Decision(True, (), effective_sql="UPDATE t SET x=1 WHERE id<9")
+
+
+def _result(**kw):
+    return SimulationResult(method="precise", **kw)
+
+
+def test_blast_radius_over_block_limit_blocks():
+    cfg = SimulationConfig(block_over_rows=1000, confirm_over_rows=100)
+    d = apply_blast_radius(_ALLOWED, _result(exact_rows=5000), cfg)
+    assert d.allowed is False
+    assert ReasonCode.BLAST_RADIUS_EXCEEDED in {v.reason_code for v in d.violations}
+    assert d.simulation["exact_rows"] == 5000
+
+
+def test_blast_radius_over_confirm_limit_requires_confirmation():
+    cfg = SimulationConfig(block_over_rows=100000, confirm_over_rows=1000)
+    d = apply_blast_radius(_ALLOWED, _result(exact_rows=5000), cfg)
+    assert d.allowed is True
+    assert d.requires_confirmation is True
+
+
+def test_blast_radius_under_thresholds_allows_with_measurement():
+    cfg = SimulationConfig(block_over_rows=100000, confirm_over_rows=1000)
+    d = apply_blast_radius(_ALLOWED, _result(exact_rows=3), cfg)
+    assert d.allowed is True and d.requires_confirmation is False
+    assert d.simulation["exact_rows"] == 3
+
+
+def test_blast_radius_timeout_requires_confirmation():
+    # Couldn't bound the impact -> ask a human, don't silently allow.
+    cfg = SimulationConfig(block_over_rows=100000, confirm_over_rows=1000)
+    d = apply_blast_radius(_ALLOWED, _result(exact_rows=None, timed_out=True), cfg)
+    assert d.allowed is True and d.requires_confirmation is True
+
+
+def test_skipped_simulation_leaves_decision_untouched():
+    d = apply_blast_radius(
+        _ALLOWED, SimulationResult(method="skipped"), SimulationConfig()
+    )
+    assert d is _ALLOWED
+
+
+def test_block_limit_wins_over_confirm():
+    # Over both thresholds -> hard block, not merely confirmation.
+    cfg = SimulationConfig(block_over_rows=1000, confirm_over_rows=100)
+    d = apply_blast_radius(_ALLOWED, _result(exact_rows=2000), cfg)
+    assert d.allowed is False

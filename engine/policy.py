@@ -22,7 +22,7 @@ statement facts by string matching (sec. 6).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -30,6 +30,7 @@ import yaml
 
 from engine import classifier
 from engine.classifier import DDL, UNKNOWN, WRITE, Classification
+from engine.simulate import SimulationConfig, SimulationResult
 
 
 # --- Stable, machine-readable reason codes -----------------------------------
@@ -45,6 +46,7 @@ class ReasonCode:
     COLUMN_BLOCKED = "COLUMN_BLOCKED"
     LOCKING_NOT_ALLOWED = "LOCKING_NOT_ALLOWED"
     FUNCTION_NOT_ALLOWED = "FUNCTION_NOT_ALLOWED"
+    BLAST_RADIUS_EXCEEDED = "BLAST_RADIUS_EXCEEDED"
     UNPARSEABLE = "UNPARSEABLE"
 
 
@@ -111,6 +113,11 @@ class Decision:
     violations: tuple[Violation, ...]
     effective_sql: str
     rewritten: bool = False
+    # Blast-radius simulation (Day 4): present only when a risky write was
+    # simulated. ``requires_confirmation`` means allowed-but-gated -- a human/agent
+    # must explicitly confirm before it runs.
+    simulation: dict | None = None
+    requires_confirmation: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -118,6 +125,8 @@ class Decision:
             "rewritten": self.rewritten,
             "effective_sql": self.effective_sql,
             "violations": [v.to_dict() for v in self.violations],
+            "requires_confirmation": self.requires_confirmation,
+            "simulation": self.simulation,
         }
 
 
@@ -161,6 +170,7 @@ class Policy:
     # columns -- or a star select over such a table -- is blocked.
     blocked_columns: dict[str, frozenset[str]] = field(default_factory=dict)
     blocked_functions: frozenset[str] = _DEFAULT_BLOCKED_FUNCTIONS
+    simulation: SimulationConfig = field(default_factory=SimulationConfig)
 
     def __post_init__(self) -> None:
         # Config errors fail loudly at construction/load, not silently at runtime.
@@ -201,6 +211,7 @@ class Policy:
             ),
             blocked_columns=blocked_columns,
             blocked_functions=blocked_functions,
+            simulation=SimulationConfig.from_dict(data.get("simulation")),
         )
 
     @classmethod
@@ -456,6 +467,53 @@ def evaluate(sql: str, classification: Classification, policy: Policy) -> Decisi
             effective_sql, rewritten = _inject_limit(sql, policy.max_rows_read)
 
     return Decision(True, (), effective_sql=effective_sql, rewritten=rewritten)
+
+
+def apply_blast_radius(
+    decision: Decision, result: SimulationResult, config: SimulationConfig
+) -> Decision:
+    """Fold a blast-radius simulation into a decision. Pure.
+
+    * Over ``block_over_rows`` -> blocked with a ``BLAST_RADIUS_EXCEEDED``
+      violation (a hard gate that always wins).
+    * Over ``confirm_over_rows`` -> allowed but ``requires_confirmation``.
+    * Timed out -> ``requires_confirmation`` (we couldn't bound the impact, so a
+      human/agent should look before it runs).
+    * Otherwise -> allowed, with the measurement attached for the audit trail.
+
+    A ``skipped`` simulation leaves the decision untouched.
+    """
+    if result.method == "skipped":
+        return decision
+
+    sim = result.to_dict()
+    rows = result.affected_rows
+
+    if (
+        rows is not None
+        and config.block_over_rows is not None
+        and rows > config.block_over_rows
+    ):
+        violation = Violation(
+            ReasonCode.BLAST_RADIUS_EXCEEDED,
+            f"Statement would affect {rows} rows, over the limit of "
+            f"{config.block_over_rows}.",
+            "Scope the statement with a narrower WHERE clause so it affects "
+            "fewer rows.",
+        )
+        return replace(
+            decision,
+            allowed=False,
+            violations=decision.violations + (violation,),
+            simulation=sim,
+        )
+
+    needs_confirmation = result.timed_out or (
+        rows is not None
+        and config.confirm_over_rows is not None
+        and rows > config.confirm_over_rows
+    )
+    return replace(decision, simulation=sim, requires_confirmation=needs_confirmation)
 
 
 def decide(sql: str, policy: Policy) -> Decision:

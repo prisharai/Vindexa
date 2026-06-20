@@ -28,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from functools import lru_cache
 
-from pglast.enums import ObjectType
+from pglast.enums import A_Expr_Kind, ObjectType
 from pglast.visitors import Visitor
 
 from engine import parser
@@ -127,6 +127,7 @@ class StatementInfo:
     touches_system_catalog: bool
     has_locking: bool  # SELECT ... FOR UPDATE/SHARE/NO KEY UPDATE (takes locks)
     functions: tuple[str, ...]  # bare lower-cased function names called
+    point_write: bool  # UPDATE/DELETE whose WHERE is a single `col = value`
 
 
 @dataclass(frozen=True)
@@ -160,6 +161,7 @@ class Classification:
                     "touches_system_catalog": s.touches_system_catalog,
                     "has_locking": s.has_locking,
                     "functions": list(s.functions),
+                    "point_write": s.point_write,
                 }
                 for s in self.statements
             ],
@@ -314,6 +316,28 @@ def _kind_for(stmt_type: str, walk: _Walk, sel_into: bool) -> str:
     return DDL
 
 
+def _is_point_predicate(where) -> bool:
+    """True if ``where`` is a single ``column = constant/param`` equality.
+
+    A heuristic for "point" writes (update/delete one record by id). It can't see
+    schema, so equality on a *non-unique* column is a known false-negative for
+    riskiness -- handled conservatively by callers (we'd rather simulate than
+    miss). Anything compound (AND/OR), ranged (`<`), or set-based (`IN`) is not a
+    point predicate.
+    """
+    if where is None or type(where).__name__ != "A_Expr":
+        return False
+    if where.kind != A_Expr_Kind.AEXPR_OP:
+        return False
+    names = [getattr(n, "sval", None) for n in (where.name or ())]
+    if names != ["="]:
+        return False
+    return (
+        type(where.lexpr).__name__ == "ColumnRef"
+        and type(where.rexpr).__name__ in {"A_Const", "ParamRef"}
+    )
+
+
 def _classify_one(index: int, stmt_node) -> StatementInfo:
     walk = _Walk()
     walk(stmt_node)
@@ -335,6 +359,11 @@ def _classify_one(index: int, stmt_node) -> StatementInfo:
     # A write nested under a non-write top node (e.g. data-modifying CTE).
     nested_dml = bool(walk.write_nodes) and stmt_type not in _WRITE_STMTS
 
+    # A scoped point write (UPDATE/DELETE ... WHERE col = value) is routine.
+    point_write = stmt_type in {"UpdateStmt", "DeleteStmt"} and _is_point_predicate(
+        getattr(stmt_node, "whereClause", None)
+    )
+
     return StatementInfo(
         index=index,
         stmt_type=stmt_type,
@@ -347,6 +376,7 @@ def _classify_one(index: int, stmt_node) -> StatementInfo:
         touches_system_catalog=_touches_catalog(walk),
         has_locking=walk.has_locking,
         functions=tuple(sorted(walk.functions)),
+        point_write=point_write,
     )
 
 

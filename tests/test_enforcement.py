@@ -14,6 +14,7 @@ import pytest
 from adapters.mcp_server import ShadowSession
 from engine.audit import AuditLog
 from engine.policy import Policy
+from engine.simulate import SimulationConfig
 
 DB_DSN = os.environ.get(
     "AGENT_DB_DSN",
@@ -103,3 +104,79 @@ async def test_observe_mode_does_not_rewrite_live_reads(make_session):
     res = await sess.run_query("SELECT * FROM actor")
     assert res["blocked"] is False
     assert res["row_count"] == 200  # NOT capped at 5
+
+
+# --- Day 4: blast-radius simulation through the adapter -----------------------
+
+
+@pytest.fixture
+async def scratch():
+    """A throwaway 50-row table for write tests; dropped on teardown."""
+    try:
+        c = await asyncpg.connect(dsn=DB_DSN, timeout=5)
+    except (OSError, asyncpg.PostgresError) as exc:
+        pytest.skip(f"dev Postgres not reachable at {DB_DSN} ({exc})")
+    await c.execute("DROP TABLE IF EXISTS _sim_scratch")
+    await c.execute("CREATE TABLE _sim_scratch (id int primary key)")
+    await c.execute("INSERT INTO _sim_scratch SELECT generate_series(1, 50)")
+    try:
+        yield c
+    finally:
+        await c.execute("DROP TABLE IF EXISTS _sim_scratch")
+        await c.close()
+
+
+async def test_risky_write_needs_confirmation_then_runs_on_confirm(
+    make_session, scratch
+):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    sql = "DELETE FROM _sim_scratch WHERE id <= 29"  # 29 rows > confirm limit 10
+
+    # First attempt: held for confirmation, blast radius measured, NOT executed.
+    res = await sess.run_query(sql)
+    assert res["requires_confirmation"] is True
+    assert res["blocked"] is False
+    assert res["simulation"]["exact_rows"] == 29
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
+
+    # Re-issued with confirm=True: now it runs.
+    res2 = await sess.run_query(sql, confirm=True)
+    assert res2["requires_confirmation"] is False
+    assert res2["status"] == "DELETE 29"
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 21
+
+
+async def test_risky_write_over_block_limit_is_blocked(make_session, scratch):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(enabled=True, precise=True, block_over_rows=10),
+        )
+    )
+    # 39 rows > block limit 10 -> blocked outright, even with confirm.
+    res = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 39", confirm=True)
+    assert res["blocked"] is True
+    assert any(v["reason_code"] == "BLAST_RADIUS_EXCEEDED" for v in res["violations"])
+    assert res["simulation"]["exact_rows"] == 39
+    assert (
+        await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
+    )  # untouched
+
+
+async def test_reads_are_not_simulated_through_adapter(make_session):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=frozenset({"film"}),
+            simulation=SimulationConfig(enabled=True),
+        )
+    )
+    res = await sess.run_query("SELECT film_id FROM film WHERE film_id = 1")
+    assert res["simulation"] is None  # reads are never simulated
+    assert res["row_count"] == 1
