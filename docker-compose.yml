@@ -1,0 +1,37 @@
+# Local dev Postgres for agent-db-safety.
+#
+# `docker compose up` gives a seeded Postgres an agent can reach:
+#   - Pagila sample schema + data (realistic FK structure)   -> db/01, db/02
+#   - large generated tables (~3M + ~2M rows) for simulation  -> db/03
+#
+# Seed scripts in ./db are mounted into the image's init dir and run, in
+# alphabetical order, ONLY on first start (when the data volume is empty).
+# The DB resets freely; never assume persistence (CLAUDE.md sec. 6).
+# To re-seed from scratch: `docker compose down -v && docker compose up`.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: agent-db-safety-pg
+    environment:
+      # The Pagila dump hardcodes ownership to the `postgres` role, so we run as
+      # `postgres` to keep the vendored SQL unedited. A restricted, dedicated
+      # agent role (least-privilege) can be layered on later (Day 1+).
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pagila
+    ports:
+      # Host 5433 -> container 5432, to avoid clashing with a local Postgres.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Healthy only once the DB accepts connections.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pagila"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
