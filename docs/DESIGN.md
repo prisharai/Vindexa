@@ -5,11 +5,12 @@
 > design choice here conflicts with `CLAUDE.md`, `CLAUDE.md` wins — surface the
 > conflict rather than silently diverging.
 
-Status: **Day 2 complete — parse + classify (observe-only).** Built so far:
-Day 0 foundation, Day 1 pass-through MCP server + async shadow-mode audit log,
-Day 2 AST parser + classifier (logged, not enforced). Day 3 (deterministic
-policy engine) is next. Sections below describe the full intended shape; modules
-past `classifier.py` are still stubs.
+Status: **Day 3 complete — deterministic policy engine v1 (enforcing).** Built so
+far: Day 0 foundation, Day 1 pass-through MCP server + async shadow-mode audit
+log, Day 2 AST parser + classifier, Day 3 YAML-driven policy engine with
+structured rejections + red/green corpus, wired into the adapter (enforce /
+observe). Day 4 (blast-radius simulation) is next. Sections below describe the
+full intended shape; `simulate.py`, `undo.py`, `intent.py` are still stubs.
 
 ---
 
@@ -104,10 +105,17 @@ Do not let the build collapse into "just another rule engine that blocks
   tables (`app_event` ~3M, `metric_sample` ~2M). See DECISIONS.md 2026-06-19.
 - ~~Parse-cache strategy and eviction.~~ **Resolved (Day 2):** bounded LRU
   (2048) keyed on raw SQL text, on both `parse` and `classify`.
-- Exact structured-rejection schema (reason code / explanation / suggested fix).
-  **Next, Day 3.**
+- ~~Exact structured-rejection schema.~~ **Resolved (Day 3):**
+  `Decision{allowed, effective_sql, rewritten, violations[]}` where each
+  `Violation` is `{reason_code, message, suggested_fix, statement_index}`; all
+  violations collected, not just the first.
+- Column-level control is a `blocked_columns` denylist for now; a default-deny
+  column allowlist needs schema-aware `SELECT *` expansion. **Deferred to Day 10
+  read-side guardrails.**
 - Undo record format and storage location (separate schema vs sidecar).
+  **Next-ish, Day 5.**
+- Blast-radius simulation gating + timeouts. **Next, Day 4.**
 - System-catalog detection currently flags unqualified `pg_*` by name; revisit
   if a non-catalog table legitimately starts with `pg_` (unlikely).
 
-_Last updated: Day 2._
+_Last updated: Day 3._

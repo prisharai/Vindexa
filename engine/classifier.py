@@ -28,9 +28,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from pglast.enums import ObjectType
 from pglast.visitors import Visitor
 
 from engine import parser
+
+# DROP object types that name a relation -- their targets feed the DDL allowlist.
+_DROP_RELATION_TYPES = {
+    ObjectType.OBJECT_TABLE,
+    ObjectType.OBJECT_VIEW,
+    ObjectType.OBJECT_MATVIEW,
+    ObjectType.OBJECT_INDEX,
+    ObjectType.OBJECT_SEQUENCE,
+    ObjectType.OBJECT_FOREIGN_TABLE,
+}
 
 # --- Statement-kind taxonomy -------------------------------------------------
 # Kinds, in increasing order of severity. The aggregate kind of a multi-statement
@@ -109,11 +120,13 @@ class StatementInfo:
     stmt_type: str  # top AST node class name, e.g. "UpdateStmt"
     kind: str  # READ / WRITE / DDL / OTHER
     tables: tuple[str, ...]  # all real tables referenced (CTE names excluded)
-    columns: tuple[str, ...]  # column references seen
+    columns: tuple[str, ...]  # column references seen (incl. "*" / "t.*" stars)
     has_where: bool | None  # for top SELECT/UPDATE/DELETE; None if N/A
     unbounded_write: bool  # any UPDATE/DELETE (incl. nested) with no WHERE
     nested_dml: bool  # a write hidden under a non-write top node
     touches_system_catalog: bool
+    has_locking: bool  # SELECT ... FOR UPDATE/SHARE/NO KEY UPDATE (takes locks)
+    functions: tuple[str, ...]  # bare lower-cased function names called
 
 
 @dataclass(frozen=True)
@@ -145,6 +158,8 @@ class Classification:
                     "unbounded_write": s.unbounded_write,
                     "nested_dml": s.nested_dml,
                     "touches_system_catalog": s.touches_system_catalog,
+                    "has_locking": s.has_locking,
+                    "functions": list(s.functions),
                 }
                 for s in self.statements
             ],
@@ -189,6 +204,8 @@ class _Walk(Visitor):
         self.columns: set[str] = set()
         self.write_nodes: list[str] = []  # node type names of DML found anywhere
         self.unbounded_write = False
+        self.has_locking = False  # FOR UPDATE / SHARE etc. anywhere in the tree
+        self.functions: set[str] = set()  # bare lower-cased function names
 
     def visit_RangeVar(self, ancestors, node):
         # Only an *unqualified* name can resolve to a CTE; a schema-qualified
@@ -206,6 +223,30 @@ class _Walk(Visitor):
                 "*" if type(f).__name__ == "A_Star" else getattr(f, "sval", "?")
             )
         self.columns.add(".".join(parts))
+
+    def visit_LockingClause(self, _ancestors, _node):
+        # SELECT ... FOR UPDATE/SHARE/NO KEY UPDATE/KEY SHARE -- takes row locks.
+        self.has_locking = True
+
+    def visit_FuncCall(self, _ancestors, node):
+        # Record the bare (last-component) function name, lower-cased, so the
+        # policy can deny unsafe functions (pg_sleep, dblink_exec, ...).
+        if node.funcname:
+            last = getattr(node.funcname[-1], "sval", None)
+            if last:
+                self.functions.add(last.lower())
+
+    def visit_DropStmt(self, _ancestors, node):
+        # DROP of a relation carries its target(s) in ``objects`` (name lists),
+        # not as RangeVars. Surface those names as tables so the DDL allowlist can
+        # match a drop target (otherwise every DROP looks object-level).
+        if node.removeType in _DROP_RELATION_TYPES:
+            for obj in node.objects or ():
+                names = [getattr(p, "sval", None) for p in obj]
+                names = [n for n in names if n]
+                if names:
+                    schema = names[-2] if len(names) >= 2 else None
+                    self.rangevars.append((schema, names[-1], False, id(obj)))
 
     def _note_write(self, node, type_name: str) -> None:
         self.write_nodes.append(type_name)
@@ -304,6 +345,8 @@ def _classify_one(index: int, stmt_node) -> StatementInfo:
         unbounded_write=walk.unbounded_write,
         nested_dml=nested_dml,
         touches_system_catalog=_touches_catalog(walk),
+        has_locking=walk.has_locking,
+        functions=tuple(sorted(walk.functions)),
     )
 
 

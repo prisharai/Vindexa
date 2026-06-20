@@ -1,0 +1,95 @@
+# RED corpus -- statements that MUST be blocked under policies/default.yaml.
+# Each `expect` is a reason code that must appear in the rejection. False
+# negatives here (a red query allowed) must be ~zero (CLAUDE.md sec. 8 Day 8).
+
+- sql: "DELETE FROM rental"
+  why: "bare DELETE, no WHERE -- would wipe the table"
+  expect: WRITE_WITHOUT_WHERE
+
+- sql: "UPDATE film SET rental_rate = 0"
+  why: "bare UPDATE, no WHERE -- rewrites every row"
+  expect: WRITE_WITHOUT_WHERE
+
+- sql: "UPDATE customer SET activebool = false"
+  why: "bare UPDATE on an allowed table is still unbounded"
+  expect: WRITE_WITHOUT_WHERE
+
+- sql: "DROP TABLE film"
+  why: "DDL is default-deny"
+  expect: DDL_NOT_ALLOWED
+
+- sql: "TRUNCATE rental"
+  why: "TRUNCATE is unrecoverable bulk delete; default-deny DDL"
+  expect: DDL_NOT_ALLOWED
+
+- sql: "ALTER TABLE film ADD COLUMN sneaky int"
+  why: "schema change, default-deny DDL"
+  expect: DDL_NOT_ALLOWED
+
+- sql: "ALTER SYSTEM SET work_mem = '64MB'"
+  why: "server-config change classified as DDL-severity"
+  expect: DDL_NOT_ALLOWED
+
+- sql: "COPY film TO PROGRAM 'id'"
+  why: "shell-out via COPY PROGRAM; fail-closed DDL bucket"
+  expect: DDL_NOT_ALLOWED
+
+- sql: "DO $$ BEGIN DELETE FROM rental; END $$"
+  why: "procedural body we can't parse; fail-closed DDL"
+  expect: DDL_NOT_ALLOWED
+
+- sql: "SELECT * FROM pg_catalog.pg_tables"
+  why: "system catalog access"
+  expect: SYSTEM_CATALOG_ACCESS
+
+- sql: "SELECT relname FROM pg_class"
+  why: "unqualified system catalog"
+  expect: SYSTEM_CATALOG_ACCESS
+
+- sql: "SELECT table_name FROM information_schema.tables"
+  why: "information_schema access"
+  expect: SYSTEM_CATALOG_ACCESS
+
+- sql: "SELECT * FROM secret_accounts"
+  why: "table not on the allowlist (default-deny)"
+  expect: TABLE_NOT_ALLOWED
+
+- sql: "SELECT f.title FROM film f JOIN secret_accounts s ON true"
+  why: "one disallowed table in a join is enough to block"
+  expect: TABLE_NOT_ALLOWED
+
+- sql: "SELECT 1; DROP TABLE film"
+  why: "sneaky second statement smuggled in a batch"
+  expect: MULTI_STATEMENT
+
+- sql: "WITH d AS (DELETE FROM rental RETURNING *) SELECT * FROM d"
+  why: "data-modifying CTE: a delete-all hidden under a SELECT"
+  expect: WRITE_WITHOUT_WHERE
+
+- sql: "SELECT password FROM staff WHERE staff_id = 1"
+  why: "explicit reference to a sensitive blocked column"
+  expect: COLUMN_BLOCKED
+
+- sql: "SELECT * FROM staff WHERE staff_id = 1"
+  why: "star select over a table with a restricted column (staff.password)"
+  expect: COLUMN_BLOCKED
+
+- sql: "SELECT staff.* FROM staff WHERE staff_id = 1"
+  why: "qualified star over a sensitive table still leaks restricted columns"
+  expect: COLUMN_BLOCKED
+
+- sql: "SELECT * FROM film WHERE film_id = 1 FOR UPDATE"
+  why: "FOR UPDATE takes row locks -- not a safe read"
+  expect: LOCKING_NOT_ALLOWED
+
+- sql: "SELECT pg_sleep(60)"
+  why: "pg_sleep ties up a connection; unsafe function"
+  expect: FUNCTION_NOT_ALLOWED
+
+- sql: "SELECT lo_import('/etc/passwd')"
+  why: "large-object import reaches the filesystem; unsafe function"
+  expect: FUNCTION_NOT_ALLOWED
+
+- sql: "SELECT FROM WHERE ;;;"
+  why: "unparseable -> fail closed"
+  expect: UNPARSEABLE

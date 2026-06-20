@@ -1,10 +1,463 @@
 """Deterministic, YAML-driven policy engine.
 
-HOT PATH. Pure in-memory rule evaluation -- no I/O (CLAUDE.md sec. 8, Day 3).
-Blocks the obviously dangerous, allows the obviously safe; on block returns a
-structured, machine-readable rejection (reason code, human explanation,
-suggested fix) so the agent can self-correct. Fail-closed for writes,
-fail-open for reads (sec. 4).
+HOT PATH. ``evaluate()`` is pure in-memory rule evaluation -- no I/O, no network,
+no LLM (CLAUDE.md sec. 8, Day 3). It blocks the obviously dangerous and allows
+the obviously safe, and on a block returns a structured, machine-readable
+rejection (reason code, human explanation, suggested fix) so the agent can
+self-correct. Policy *loading* (YAML -> ``Policy``) happens once at startup and
+is explicitly off the hot path.
 
-Built in Day 3. Stub only for now.
+Posture (sec. 4):
+* **Fail closed on uncertainty for writes.** An unparseable statement can't be
+  reasoned about, so it's blocked (we can't prove it's a harmless read).
+* **Fail open for reads.** A clean read that breaks no rule is allowed. The
+  optional LIMIT auto-injection is a guardrail, not a gate: if rewriting fails
+  for any reason we let the original read through rather than block it.
+* **Default-deny tables.** When a table allowlist is configured, anything not on
+  it is blocked.
+
+This evaluates classifications from ``engine.classifier`` -- it never re-derives
+statement facts by string matching (sec. 6).
 """
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
+
+import yaml
+
+from engine import classifier
+from engine.classifier import DDL, UNKNOWN, WRITE, Classification
+
+
+# --- Stable, machine-readable reason codes -----------------------------------
+class ReasonCode:
+    """Stable codes an agent can branch on. Strings, never reordered."""
+
+    READ_ONLY = "READ_ONLY_MODE"
+    WRITE_WITHOUT_WHERE = "WRITE_WITHOUT_WHERE"
+    MULTI_STATEMENT = "MULTI_STATEMENT"
+    SYSTEM_CATALOG = "SYSTEM_CATALOG_ACCESS"
+    TABLE_NOT_ALLOWED = "TABLE_NOT_ALLOWED"
+    DDL_NOT_ALLOWED = "DDL_NOT_ALLOWED"
+    COLUMN_BLOCKED = "COLUMN_BLOCKED"
+    LOCKING_NOT_ALLOWED = "LOCKING_NOT_ALLOWED"
+    FUNCTION_NOT_ALLOWED = "FUNCTION_NOT_ALLOWED"
+    UNPARSEABLE = "UNPARSEABLE"
+
+
+# Valid policy modes. An unknown mode is a config error -> rejected at load
+# (see Policy.__post_init__), and the adapter fails closed regardless.
+VALID_MODES = frozenset({"enforce", "observe"})
+
+# Functions blocked by default: they sleep/hold connections, take advisory locks,
+# touch the filesystem/large objects, reach out over the network, or change
+# server state. A SELECT calling one of these is not an "obviously safe" read.
+_DEFAULT_BLOCKED_FUNCTIONS = frozenset(
+    {
+        "pg_sleep",
+        "pg_sleep_for",
+        "pg_sleep_until",
+        "set_config",
+        "pg_read_file",
+        "pg_read_binary_file",
+        "pg_ls_dir",
+        "lo_import",
+        "lo_export",
+        "pg_terminate_backend",
+        "pg_cancel_backend",
+    }
+)
+# Whole families blocked by name prefix.
+_BLOCKED_FUNCTION_PREFIXES = ("lo_", "dblink", "pg_advisory")
+
+
+def _is_blocked_function(name: str, policy: Policy) -> bool:
+    return name in policy.blocked_functions or name.startswith(
+        _BLOCKED_FUNCTION_PREFIXES
+    )
+
+
+@dataclass(frozen=True)
+class Violation:
+    """One reason a statement was blocked. Machine-readable + human-actionable."""
+
+    reason_code: str
+    message: str
+    suggested_fix: str
+    statement_index: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "reason_code": self.reason_code,
+            "message": self.message,
+            "suggested_fix": self.suggested_fix,
+            "statement_index": self.statement_index,
+        }
+
+
+@dataclass(frozen=True)
+class Decision:
+    """The verdict for one input string.
+
+    ``effective_sql`` is what should actually run when allowed -- identical to the
+    input unless a guardrail rewrote it (e.g. LIMIT injection), in which case
+    ``rewritten`` is True.
+    """
+
+    allowed: bool
+    violations: tuple[Violation, ...]
+    effective_sql: str
+    rewritten: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "allowed": self.allowed,
+            "rewritten": self.rewritten,
+            "effective_sql": self.effective_sql,
+            "violations": [v.to_dict() for v in self.violations],
+        }
+
+
+def _normalize_table(name: str) -> str:
+    """Fold ``public.x`` and bare ``x`` to the same key; keep other schemas.
+
+    Pagila lives in ``public``; an unqualified name resolves there by default, so
+    ``film`` and ``public.film`` are the same table. A name in another schema
+    stays distinct so the allowlist can't be bypassed via ``other.film``.
+    """
+    if "." not in name:
+        return name
+    schema, _, rel = name.partition(".")
+    return rel if schema == "public" else name
+
+
+def _bare_column(colref: str) -> str:
+    """Last component of a (possibly qualified) column reference: ``f.x`` -> ``x``."""
+    return colref.rsplit(".", 1)[-1]
+
+
+@dataclass(frozen=True)
+class Policy:
+    """A declarative policy. Construct via :meth:`from_dict` / :meth:`load`.
+
+    ``allowed_tables=None`` means "no table allowlist configured" -> all tables
+    allowed. An empty frozenset means "allow nothing" (strict default-deny).
+    """
+
+    mode: str = "enforce"  # "enforce" (block) | "observe" (decide + log, run anyway)
+    read_only: bool = False
+    allow_multi_statement: bool = False
+    block_system_catalog: bool = True
+    require_where_on_writes: bool = True
+    block_locking: bool = True  # block SELECT ... FOR UPDATE/SHARE (takes locks)
+    max_rows_read: int | None = None  # auto-inject LIMIT on unbounded reads
+    allowed_tables: frozenset[str] | None = None  # None = no allowlist (allow all)
+    # None = allow all DDL; empty set = deny all DDL; non-empty = allowlist.
+    ddl_allowed_tables: frozenset[str] | None = field(default_factory=frozenset)
+    # table (normalized) -> blocked column names. A reference to one of these
+    # columns -- or a star select over such a table -- is blocked.
+    blocked_columns: dict[str, frozenset[str]] = field(default_factory=dict)
+    blocked_functions: frozenset[str] = _DEFAULT_BLOCKED_FUNCTIONS
+
+    def __post_init__(self) -> None:
+        # Config errors fail loudly at construction/load, not silently at runtime.
+        if self.mode not in VALID_MODES:
+            raise ValueError(
+                f"invalid policy mode {self.mode!r}; must be one of "
+                f"{sorted(VALID_MODES)}"
+            )
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Policy:
+        tables = data.get("tables") or {}
+        allow = tables.get("allow")
+        allowed_tables = (
+            frozenset(_normalize_table(t) for t in allow) if allow is not None else None
+        )
+        ddl = data.get("ddl") or {}
+        blocked_columns = {
+            _normalize_table(table): frozenset(c.lower() for c in cols)
+            for table, cols in (data.get("blocked_columns") or {}).items()
+        }
+        # User-listed unsafe functions are added to (never subtracted from) the
+        # built-in defaults, so config can tighten but not weaken the safety set.
+        blocked_functions = _DEFAULT_BLOCKED_FUNCTIONS | frozenset(
+            f.lower() for f in (data.get("blocked_functions") or [])
+        )
+        return cls(
+            mode=data.get("mode", "enforce"),
+            read_only=bool(data.get("read_only", False)),
+            allow_multi_statement=bool(data.get("allow_multi_statement", False)),
+            block_system_catalog=bool(data.get("block_system_catalog", True)),
+            require_where_on_writes=bool(data.get("require_where_on_writes", True)),
+            block_locking=bool(data.get("block_locking", True)),
+            max_rows_read=data.get("max_rows_read"),
+            allowed_tables=allowed_tables,
+            ddl_allowed_tables=frozenset(
+                _normalize_table(t) for t in (ddl.get("allow") or [])
+            ),
+            blocked_columns=blocked_columns,
+            blocked_functions=blocked_functions,
+        )
+
+    @classmethod
+    def load(cls, path: str | Path) -> Policy:
+        """Load a policy from a YAML file. Startup only -- never the hot path."""
+        with Path(path).open(encoding="utf-8") as fh:
+            return cls.from_dict(yaml.safe_load(fh) or {})
+
+    @classmethod
+    def permissive(cls) -> Policy:
+        """A do-nothing policy: allows everything, rewrites nothing (tests/dev)."""
+        return cls(
+            mode="enforce",
+            block_system_catalog=False,
+            require_where_on_writes=False,
+            allow_multi_statement=True,
+            block_locking=False,
+            allowed_tables=None,
+            ddl_allowed_tables=None,
+            blocked_functions=frozenset(),
+        )
+
+
+@lru_cache(maxsize=2048)
+def _inject_limit(sql: str, limit: int) -> tuple[str, bool]:
+    """Add ``LIMIT <limit>`` to a single unbounded top-level SELECT.
+
+    Operates on a FRESH parse -- never the LRU-cached AST, which must stay
+    immutable. Fails open: any problem returns the original SQL unchanged so a
+    read is never blocked by a rewrite hiccup (sec. 4).
+
+    Cached: the rewrite is deterministic in ``(sql, limit)``, so the re-parse +
+    re-render (the priciest work on the read path) happens once per unique read,
+    not every call.
+    """
+    try:
+        from pglast import ast, parse_sql
+        from pglast.enums import LimitOption
+        from pglast.stream import RawStream
+
+        stmts = parse_sql(sql)
+        if len(stmts) != 1:
+            return sql, False
+        sel = stmts[0].stmt
+        if type(sel).__name__ != "SelectStmt":
+            return sql, False
+        # Leave SELECT INTO and already-limited queries alone.
+        if getattr(sel, "intoClause", None) is not None or sel.limitCount is not None:
+            return sql, False
+        sel.limitCount = ast.A_Const(val=ast.Integer(ival=limit))
+        sel.limitOption = LimitOption.LIMIT_OPTION_COUNT
+        return RawStream()(stmts), True
+    except Exception:
+        return sql, False
+
+
+def _column_violations(stmt, policy: Policy, idx: int) -> list[Violation]:
+    """Block references to sensitive columns, including star selects.
+
+    Per-table blocked columns let us fail closed on ``SELECT *`` / ``t.*`` over a
+    sensitive table (we can't prove the star excludes a blocked column) without
+    over-blocking stars on non-sensitive tables.
+    """
+    if not policy.blocked_columns:
+        return []
+    sensitive = {
+        _normalize_table(t): policy.blocked_columns[_normalize_table(t)]
+        for t in stmt.tables
+        if _normalize_table(t) in policy.blocked_columns
+    }
+    if not sensitive:
+        return []
+    blocked_names = frozenset().union(*sensitive.values())
+
+    out: list[Violation] = []
+    for col in stmt.columns:
+        if col == "*":
+            out.append(
+                Violation(
+                    ReasonCode.COLUMN_BLOCKED,
+                    "SELECT * over a table with restricted columns is blocked; "
+                    "the star may expose a sensitive column.",
+                    "List the specific non-sensitive columns instead of '*'.",
+                    idx,
+                )
+            )
+        elif col.endswith(".*"):
+            if _normalize_table(col[:-2]) in policy.blocked_columns:
+                out.append(
+                    Violation(
+                        ReasonCode.COLUMN_BLOCKED,
+                        f"'{col}' may expose a restricted column.",
+                        "List the specific non-sensitive columns instead.",
+                        idx,
+                    )
+                )
+        elif _bare_column(col).lower() in blocked_names:
+            out.append(
+                Violation(
+                    ReasonCode.COLUMN_BLOCKED,
+                    f"Column '{col}' is marked sensitive and is blocked.",
+                    "Remove the sensitive column from the statement.",
+                    idx,
+                )
+            )
+    return out
+
+
+def evaluate(sql: str, classification: Classification, policy: Policy) -> Decision:
+    """Decide whether ``sql`` may run under ``policy``. Pure, hot-path safe.
+
+    Collects *all* violations (not just the first) so the agent gets complete,
+    actionable feedback in one round trip. Allowed reads may be returned with a
+    LIMIT injected (``rewritten=True``).
+    """
+    # Unparseable -> fail closed. We can't prove it's a safe read, so block.
+    if classification.kind == UNKNOWN or classification.parse_error is not None:
+        return Decision(
+            allowed=False,
+            violations=(
+                Violation(
+                    ReasonCode.UNPARSEABLE,
+                    "Statement could not be parsed, so its effect can't be "
+                    "verified; blocked as a fail-closed default.",
+                    "Send a single, syntactically valid SQL statement.",
+                ),
+            ),
+            effective_sql=sql,
+        )
+
+    violations: list[Violation] = []
+
+    # Multi-statement: a classic way to smuggle a second statement past review.
+    if classification.is_multi_statement and not policy.allow_multi_statement:
+        violations.append(
+            Violation(
+                ReasonCode.MULTI_STATEMENT,
+                f"Input contains {classification.statement_count} statements; "
+                "multiple statements per request are not allowed.",
+                "Send one statement per request.",
+            )
+        )
+
+    for stmt in classification.statements:
+        idx = stmt.index
+
+        if policy.read_only and stmt.kind in (WRITE, DDL):
+            violations.append(
+                Violation(
+                    ReasonCode.READ_ONLY,
+                    f"Policy is read-only; a {stmt.kind} statement "
+                    f"({stmt.stmt_type}) is not permitted.",
+                    "Issue a read-only (SELECT) statement instead.",
+                    idx,
+                )
+            )
+
+        if policy.require_where_on_writes and stmt.unbounded_write:
+            violations.append(
+                Violation(
+                    ReasonCode.WRITE_WITHOUT_WHERE,
+                    "UPDATE/DELETE has no WHERE clause and would affect every "
+                    "row in the table.",
+                    "Add a WHERE clause that scopes the statement to the "
+                    "intended rows.",
+                    idx,
+                )
+            )
+
+        if policy.block_system_catalog and stmt.touches_system_catalog:
+            violations.append(
+                Violation(
+                    ReasonCode.SYSTEM_CATALOG,
+                    "Statement reads PostgreSQL system catalogs / "
+                    "information_schema, which is not permitted.",
+                    "Query application tables directly instead of catalog " "metadata.",
+                    idx,
+                )
+            )
+
+        # Default-deny table allowlist.
+        if policy.allowed_tables is not None:
+            for table in stmt.tables:
+                if _normalize_table(table) not in policy.allowed_tables:
+                    violations.append(
+                        Violation(
+                            ReasonCode.TABLE_NOT_ALLOWED,
+                            f"Table '{table}' is not on the allowlist.",
+                            "Restrict the statement to allowed tables, or request "
+                            "that this table be added to the policy.",
+                            idx,
+                        )
+                    )
+
+        # DDL is default-deny unless every target table is DDL-allowlisted.
+        # ddl_allowed_tables=None means DDL is unrestricted (e.g. permissive dev).
+        if stmt.kind == DDL and policy.ddl_allowed_tables is not None:
+            ddl_tables = stmt.tables or ("",)  # "" => object-level DDL w/o a table
+            for table in ddl_tables:
+                if _normalize_table(table) not in policy.ddl_allowed_tables:
+                    target = f"'{table}'" if table else "this object"
+                    violations.append(
+                        Violation(
+                            ReasonCode.DDL_NOT_ALLOWED,
+                            f"Schema-changing statement ({stmt.stmt_type}) on "
+                            f"{target} is not permitted.",
+                            "DDL is blocked by default; request an explicit "
+                            "allowlist entry if this change is intended.",
+                            idx,
+                        )
+                    )
+
+        # SELECT ... FOR UPDATE/SHARE takes row locks -- not an "obviously safe"
+        # read (sec. 4).
+        if policy.block_locking and stmt.has_locking:
+            violations.append(
+                Violation(
+                    ReasonCode.LOCKING_NOT_ALLOWED,
+                    "Statement uses a locking clause (FOR UPDATE/SHARE) and would "
+                    "take row locks.",
+                    "Remove the FOR UPDATE / FOR SHARE locking clause.",
+                    idx,
+                )
+            )
+
+        # Unsafe functions: sleeps, advisory locks, filesystem/network/server
+        # state. A SELECT calling one is not a safe read.
+        for fn in stmt.functions:
+            if _is_blocked_function(fn, policy):
+                violations.append(
+                    Violation(
+                        ReasonCode.FUNCTION_NOT_ALLOWED,
+                        f"Function '{fn}()' is not permitted (it can sleep, lock, "
+                        "reach the filesystem/network, or change server state).",
+                        "Remove the call to this function.",
+                        idx,
+                    )
+                )
+
+        # Sensitive columns. With per-table blocked columns we can fail closed on
+        # star selects over a sensitive table (can't prove '*' excludes a blocked
+        # column), and match explicit/qualified references too.
+        violations.extend(_column_violations(stmt, policy, idx))
+
+    if violations:
+        return Decision(False, tuple(violations), effective_sql=sql)
+
+    # Allowed. Apply the read guardrail (LIMIT injection) if configured.
+    effective_sql, rewritten = sql, False
+    if policy.max_rows_read is not None and classification.statement_count == 1:
+        stmt = classification.statements[0]
+        if stmt.kind == "read" and stmt.stmt_type == "SelectStmt":
+            effective_sql, rewritten = _inject_limit(sql, policy.max_rows_read)
+
+    return Decision(True, (), effective_sql=effective_sql, rewritten=rewritten)
+
+
+def decide(sql: str, policy: Policy) -> Decision:
+    """Convenience: classify ``sql`` then evaluate it. Both are cached."""
+    return evaluate(sql, classifier.classify(sql), policy)

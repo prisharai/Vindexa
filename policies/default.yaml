@@ -1,0 +1,68 @@
+# Default policy for agent-db-safety (Day 3).
+#
+# Declarative, version-controlled, human-readable (CLAUDE.md sec. 6). Loaded once
+# at startup into an immutable Policy; evaluation against it is pure in-memory
+# work on the hot path (sec. 4). Posture: fail closed for writes, fail open for
+# reads; default-deny on tables and DDL.
+
+# enforce = block disallowed statements. observe = decide + log, but still run
+# (shadow). Use observe to trial a policy against live traffic before enforcing.
+mode: enforce
+
+# Global kill-switch: when true, only reads are allowed.
+read_only: false
+
+# Multiple statements per request are a classic smuggling vector -> blocked.
+allow_multi_statement: false
+
+# Block reads/writes against pg_catalog / information_schema.
+block_system_catalog: true
+
+# Block bare UPDATE/DELETE (no WHERE) -- they would hit every row.
+require_where_on_writes: true
+
+# Auto-inject LIMIT on unbounded top-level SELECTs (guardrail, not a gate; a read
+# is never blocked for lacking a LIMIT, only capped). null disables.
+max_rows_read: 1000
+
+# Sensitive columns, per table. A reference to one of these columns -- or a star
+# select (`SELECT *` / `staff.*`) over the table -- is blocked. Pagila's staff
+# table holds a `password` column.
+blocked_columns:
+  staff:
+    - password
+
+# Unsafe functions are blocked on top of a built-in default set (pg_sleep,
+# advisory locks, lo_*, dblink, filesystem readers, ...). Add more here.
+blocked_functions: []
+
+# Block SELECT ... FOR UPDATE/SHARE, which takes row locks.
+block_locking: true
+
+# Default-deny table allowlist. Only these tables may be referenced. Anything
+# else is blocked with a TABLE_NOT_ALLOWED rejection. (Pagila public schema +
+# the large generated tables.)
+tables:
+  allow:
+    - actor
+    - address
+    - category
+    - city
+    - country
+    - customer
+    - film
+    - film_actor
+    - film_category
+    - inventory
+    - language
+    - payment
+    - rental
+    - staff
+    - store
+    - app_event
+    - metric_sample
+
+# DDL is default-deny. List tables on which schema changes (DROP/TRUNCATE/ALTER/
+# CREATE INDEX/...) are explicitly permitted. Empty = no DDL allowed anywhere.
+ddl:
+  allow: []

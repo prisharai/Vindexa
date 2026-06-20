@@ -180,4 +180,90 @@ per-RangeVar ancestor walk is negligible — cold classify still **0.167 ms (~30
 under the 5 ms p99 budget)**, warm unchanged. All three fixes make the classifier
 *more* fail-closed (safer defaults), consistent with §4. 53 tests green.
 
+## 2026-06-20 — Day 3: deterministic policy engine v1
+**Decision:** Built `engine/policy.py` (pure, hot-path `evaluate()`), the YAML
+`policies/default.yaml`, a red/green corpus under `corpus/`, and wired
+enforcement into the adapter. New dependency **PyYAML** — sanctioned by §6 ("Config:
+declarative YAML policy files"); used only at startup for policy/corpus loading,
+never on the hot path.
+
+* **Rejection schema (resolves the DESIGN.md open question):** a `Decision` has
+  `allowed`, an `effective_sql` (rewritten or original), `rewritten`, and a tuple
+  of `Violation(reason_code, message, suggested_fix, statement_index)`. Reason
+  codes are stable strings an agent can branch on (`WRITE_WITHOUT_WHERE`,
+  `DDL_NOT_ALLOWED`, `TABLE_NOT_ALLOWED`, `SYSTEM_CATALOG_ACCESS`,
+  `MULTI_STATEMENT`, `READ_ONLY_MODE`, `COLUMN_BLOCKED`, `UNPARSEABLE`). We
+  collect **all** violations, not the first, so the agent can fix everything in
+  one round trip.
+* **Rules:** read-only mode; default-deny table allowlist; bare UPDATE/DELETE
+  blocked (via `unbounded_write`); DDL default-deny with a per-table allowlist;
+  system-catalog block; multi-statement block; LIMIT auto-injection on unbounded
+  reads. `allowed_tables=None`/`ddl_allowed_tables=None` mean "no allowlist →
+  allow all" (mirrors each other); empty set = deny all.
+* **Posture:** unparseable → fail closed (block); clean reads fail open; LIMIT
+  injection is a guardrail that fails open (rewrite failure → run original, never
+  block a read).
+* **Columns — scoping decision (honest limit, §11):** implemented a
+  `blocked_columns` **denylist** for sensitive columns rather than a default-deny
+  column *allowlist*. A column allowlist needs schema-aware `SELECT *` expansion
+  to avoid massive false positives, which we don't have yet. The denylist matches
+  explicit column references only; `SELECT *` can't be checked without schema.
+  Documented as a known gap for a later (Day 10) read-side pass.
+* **LIMIT injection** mutates a **fresh** parse (never the cached AST) and sets
+  both `limitCount` and `limitOption=LIMIT_OPTION_COUNT` (a count alone renders
+  without the LIMIT keyword). Result is LRU-cached on `(sql, limit)`.
+* **Adapter:** `ShadowSession` gains an optional `Policy`. `None` → pure
+  pass-through (keeps Day 1/2 behaviour/tests). With a policy: `enforce` blocks
+  before touching the DB and returns the structured rejection; `observe` logs the
+  decision but still runs (safe live trial). The server loads `default.yaml` at
+  startup.
+
+**Latency/safety impact:** `evaluate()` is pure in-memory. Measured warm (with
+the injection cache) at **2.2 µs** (~2200× under the 5 ms p99 budget); the only
+non-trivial cost is the first LIMIT injection per unique read (~255 µs re-parse +
+render, then cached). Verified end-to-end on the live server: `DROP TABLE film`
+blocked (`DDL_NOT_ALLOWED`), scoped SELECT allowed, `SELECT * FROM actor` capped.
+Corpus: **18/18 red blocked with expected reason codes, 12/12 green allowed**;
+108 tests green.
+
+## 2026-06-20 — Day 3 QA fixes (P0/P1×3/P2 from QA_REPORT.md)
+**Decision:** Fixed five issues from QA review of the Day 3 policy engine, each
+with a regression test and (where relevant) new red-corpus cases.
+
+* **P0 — unsafe SELECTs were treated as safe reads.** `SELECT pg_sleep(60)` ties
+  up a connection and `SELECT ... FOR UPDATE` takes row locks. The classifier now
+  records `has_locking` (any `LockingClause`) and `functions` (bare lower-cased
+  `FuncCall` names). New policy rules block locking clauses
+  (`LOCKING_NOT_ALLOWED`, toggle `block_locking`) and a **denylist** of unsafe
+  functions (`FUNCTION_NOT_ALLOWED`): defaults cover `pg_sleep*`, `set_config`,
+  `pg_read_file`/`pg_ls_dir`, `pg_terminate/cancel_backend`, plus prefix families
+  `lo_*`, `dblink*`, `pg_advisory*`. Config can add to (never subtract from) the
+  defaults.
+* **P1a — invalid mode silently disabled enforcement.** `Policy.__post_init__`
+  now rejects any mode outside {enforce, observe} (config fails loud at load).
+  Defense in depth: the adapter computes `enforce = mode != "observe"`, so an
+  unknown mode fails closed (enforces) rather than passing traffic through.
+* **P1b — observe mode rewrote live reads.** The adapter ran
+  `decision.effective_sql` in all modes, so observe injected a LIMIT and changed
+  live results. Now only *enforcing* mode applies the rewrite; observe runs the
+  original SQL unchanged and merely logs the would-be effective SQL.
+* **P1c — sensitive columns leaked through `SELECT *`.** `blocked_columns` is now
+  a **per-table map** (`{table: {cols}}`). That lets us fail closed on `SELECT *`
+  / `t.*` over a table that has restricted columns (we can't prove the star
+  excludes them) while NOT over-blocking stars on non-sensitive tables (green
+  `SELECT * FROM actor` still passes). Resolves the Day 3 "column allowlist"
+  gap honestly without full schema introspection.
+* **P2 — DROP ignored the DDL allowlist target.** `DropStmt` names targets in
+  `objects` (name lists), not RangeVars, so every DROP looked object-level and
+  was blocked even when allowlisted. The classifier now extracts relation-drop
+  targets into `tables`, so `ddl.allow` applies to drops (`DROP TABLE film`
+  allowed when film is allowlisted; `DROP TABLE actor` still blocked).
+
+**Latency/safety impact:** All fixes are pure classification/policy (no I/O
+added). The extra `FuncCall`/`LockingClause`/`DropStmt` visits are on the
+already-cached parse walk: classify cold measured **0.14 ms** (~36× under the
+5 ms p99 budget), warm unchanged. Every change tightens the fail-closed posture.
+Corpus now **23/23 red blocked (with expected codes), 12/12 green allowed**;
+119 tests green.
+
 <!-- Append future decisions below this line. -->

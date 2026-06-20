@@ -1,0 +1,39 @@
+# GREEN corpus -- statements that MUST be allowed under policies/default.yaml.
+# False positives here (a green query blocked) erode trust and get the tool
+# disabled (CLAUDE.md sec. 11) -- keep this set passing.
+
+- sql: "SELECT film_id, title FROM film WHERE film_id = 1"
+  why: "ordinary scoped read on an allowed table"
+
+- sql: "SELECT * FROM actor"
+  why: "unbounded read -- allowed, just capped with an injected LIMIT"
+
+- sql: "SELECT count(*) FROM payment"
+  why: "aggregate read"
+
+- sql: "SELECT c.first_name, c.last_name FROM customer c JOIN rental r ON c.customer_id = r.customer_id WHERE r.rental_id = 5"
+  why: "multi-table join, all tables allowed"
+
+- sql: "SELECT a.first_name FROM actor a WHERE a.actor_id IN (SELECT actor_id FROM film_actor WHERE film_id = 1)"
+  why: "sub-select across allowed tables"
+
+- sql: "WITH recent AS (SELECT * FROM rental WHERE rental_date > now() - interval '7 days') SELECT customer_id FROM recent"
+  why: "CTE name is not a real table; underlying table is allowed"
+
+- sql: "SELECT * FROM app_event WHERE customer_id = 5 LIMIT 10"
+  why: "already-bounded read on a large allowed table"
+
+- sql: "UPDATE film SET rental_rate = 2.99 WHERE film_id = 10"
+  why: "scoped UPDATE with a WHERE on an allowed table"
+
+- sql: "DELETE FROM rental WHERE rental_id = 5"
+  why: "scoped DELETE with a WHERE"
+
+- sql: "INSERT INTO category (name) VALUES ('Indie')"
+  why: "INSERT needs no WHERE; allowed table"
+
+- sql: "SELECT first_name, last_name FROM staff WHERE staff_id = 1"
+  why: "reads an allowed table without touching the blocked password column"
+
+- sql: "SELECT customer_id, SUM(amount) FROM payment GROUP BY customer_id HAVING SUM(amount) > 100"
+  why: "grouped/having aggregate read"
