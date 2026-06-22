@@ -2,8 +2,8 @@
 
 Proves a recorded write can be reverted to restore prior state for UPDATE,
 DELETE, and INSERT; that the undo log is the who/what/when audit trail; that a
-revert can't be replayed; and that unsupported shapes execute but are flagged
-non-reversible. Skips cleanly when the dev DB isn't up.
+revert can't be replayed; and that unsupported shapes are blocked by default.
+Skips cleanly when the dev DB isn't up.
 """
 
 import os
@@ -19,6 +19,7 @@ DB_DSN = os.environ.get(
     "postgresql://postgres:postgres@localhost:5433/pagila",
 )
 CFG = UndoConfig(enabled=True)
+PERMISSIVE_CFG = UndoConfig(enabled=True, block_non_reversible=False)
 
 
 @pytest.fixture
@@ -55,6 +56,18 @@ async def _run(conn, store, sql, task="t"):
         agent="agent-x",
         stated_task=task,
         config=CFG,
+        store=store,
+    )
+
+
+async def _run_permissive(conn, store, sql, task="t"):
+    return await execute_with_undo(
+        conn,
+        sql,
+        classify(sql),
+        agent="agent-x",
+        stated_task=task,
+        config=PERMISSIVE_CFG,
         store=store,
     )
 
@@ -128,10 +141,10 @@ async def test_revert_unknown_action_id(db):
     assert not r.ok and "no such action_id" in r.error
 
 
-# --- Unsupported shapes execute but are flagged ------------------------------
+# --- Unsupported shapes block by default -------------------------------------
 
 
-async def test_multi_table_update_runs_but_is_not_reversible(db):
+async def test_multi_table_update_blocks_when_undo_required(db):
     conn, store = db
     out = await _run(
         conn,
@@ -139,32 +152,50 @@ async def test_multi_table_update_runs_but_is_not_reversible(db):
         "UPDATE _undo_test t SET val='z' FROM (SELECT 1 AS id) s WHERE t.id = s.id",
     )
     assert out.reversible is False
+    assert out.blocked is True
     assert out.action_id is None
     assert "FROM/USING" in out.reason
-    assert out.status == "UPDATE 1"  # still executed
+    assert out.status is None
+    assert (await _state(conn))[0]["val"] == "a"
 
 
-async def test_update_without_primary_key_is_not_reversible(db):
+async def test_non_reversible_writes_can_be_opted_into_for_local_eval(db):
+    conn, store = db
+    out = await _run_permissive(
+        conn,
+        store,
+        "UPDATE _undo_test t SET val='z' FROM (SELECT 1 AS id) s WHERE t.id = s.id",
+    )
+    assert out.reversible is False
+    assert out.blocked is False
+    assert out.status == "UPDATE 1"
+
+
+async def test_update_without_primary_key_blocks_by_default(db):
     conn, store = db
     await conn.execute("CREATE TABLE _undo_nopk (id int, val text)")
     await conn.execute("INSERT INTO _undo_nopk VALUES (1,'a')")
     try:
         out = await _run(conn, store, "UPDATE _undo_nopk SET val='b' WHERE id = 1")
         assert out.reversible is False
+        assert out.blocked is True
         assert "primary key" in out.reason
-        assert out.status == "UPDATE 1"  # still executed
+        assert out.status is None
+        assert await conn.fetchval("SELECT val FROM _undo_nopk WHERE id = 1") == "a"
     finally:
         await conn.execute("DROP TABLE _undo_nopk")
 
 
-async def test_update_changing_primary_key_is_not_reversible(db):
+async def test_update_changing_primary_key_blocks_by_default(db):
     # We match the old PK on revert; if the UPDATE changes the PK, the old key
     # is gone -- so we refuse rather than silently fail to restore.
     conn, store = db
     out = await _run(conn, store, "UPDATE _undo_test SET id = id + 100 WHERE id = 1")
     assert out.reversible is False
+    assert out.blocked is True
     assert "primary-key" in out.reason
-    assert out.status == "UPDATE 1"  # still executed
+    assert out.status is None
+    assert await conn.fetchval("SELECT count(*) FROM _undo_test WHERE id = 1") == 1
 
 
 # --- QA regressions ----------------------------------------------------------
@@ -180,8 +211,10 @@ async def test_qa_p0_upsert_is_not_reversible(db):
         "ON CONFLICT (id) DO UPDATE SET val = excluded.val",
     )
     assert out.reversible is False
+    assert out.blocked is True
     assert "ON CONFLICT" in out.reason
-    assert out.status == "INSERT 0 1"  # still executed
+    assert out.status is None
+    assert await conn.fetchval("SELECT val FROM _undo_test WHERE id = 1") == "a"
 
 
 async def test_qa_p0_revert_conflicts_on_concurrent_change(db):
@@ -213,7 +246,7 @@ async def test_qa_p0_insert_revert_conflicts_if_row_modified(db):
 
 async def test_qa_p1_returning_write_preserves_rows_not_reversible(db):
     conn, store = db
-    out = await _run(
+    out = await _run_permissive(
         conn, store, "UPDATE _undo_test SET val='x' WHERE id=1 RETURNING id, val"
     )
     assert out.reversible is False
@@ -222,9 +255,9 @@ async def test_qa_p1_returning_write_preserves_rows_not_reversible(db):
 
 
 async def test_qa_p1_write_cte_runs_normally_not_reversible(db):
-    # A valid WITH ... UPDATE must still run; we just don't auto-revert it.
+    # A valid WITH ... UPDATE can still run only in permissive local-eval mode.
     conn, store = db
-    out = await _run(
+    out = await _run_permissive(
         conn,
         store,
         "WITH ids AS (SELECT 1 AS id) "

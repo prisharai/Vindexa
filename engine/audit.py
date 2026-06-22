@@ -55,6 +55,7 @@ class AuditLog:
         self._stopping = False
         # Observability for the fail-open drop path.
         self.dropped = 0
+        self.last_drop_ts: float | None = None
 
     async def start(self) -> None:
         """Open the log file and launch the background consumer."""
@@ -76,6 +77,18 @@ class AuditLog:
             self._queue.put_nowait(entry)
         except asyncio.QueueFull:
             self.dropped += 1
+            self.last_drop_ts = time.time()
+
+    def status(self) -> dict[str, Any]:
+        """Runtime health for the fail-open audit path."""
+        return {
+            "path": str(self._path),
+            "queue_depth": self._queue.qsize(),
+            "queue_max": self._queue.maxsize,
+            "dropped": self.dropped,
+            "last_drop_ts": self.last_drop_ts,
+            "running": self._task is not None and not self._task.done(),
+        }
 
     async def _consume(self) -> None:
         """Drain the queue and append entries to the JSONL file in batches."""

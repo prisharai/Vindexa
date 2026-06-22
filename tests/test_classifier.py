@@ -79,9 +79,10 @@ def test_ddl_statements(sql, expected_type):
     assert s.stmt_type == expected_type
 
 
-def test_transaction_and_set_are_other():
-    assert classify("BEGIN").kind == "other"
-    assert classify("SET search_path = x").kind == "other"
+def test_show_is_other_but_session_control_fails_closed():
+    assert classify("SHOW work_mem").kind == "other"
+    assert classify("BEGIN").kind == DDL
+    assert classify("SET search_path = x").kind == DDL
 
 
 # --- Tricky cases named in §8 Day 2 ------------------------------------------
@@ -250,11 +251,23 @@ def test_qa_p1a_prepare_with_visible_write_is_caught_as_write():
     assert classify("PREPARE p AS DELETE FROM film").kind == WRITE
 
 
-@pytest.mark.parametrize(
-    "sql", ["BEGIN", "COMMIT", "SET search_path = x", "SHOW work_mem"]
-)
+@pytest.mark.parametrize("sql", ["SHOW work_mem"])
 def test_qa_p1a_safe_utilities_stay_other(sql):
     assert classify(sql).kind == "other"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "BEGIN",
+        "COMMIT",
+        "SET search_path = x",
+        "SET ROLE postgres",
+        "SET statement_timeout = 0",
+    ],
+)
+def test_session_control_fails_closed(sql):
+    assert classify(sql).kind == DDL
 
 
 def test_qa_p1b_nested_cte_does_not_hide_outer_real_table():

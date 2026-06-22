@@ -87,10 +87,13 @@ def test_ddl_default_deny_and_allowlist():
 
 
 def test_object_level_ddl_without_a_table_is_blocked():
-    # CREATE DATABASE / ALTER SYSTEM / DO have no target table -> default-deny.
+    # CREATE DATABASE / ALTER SYSTEM / SET have no target table -> default-deny.
     p = Policy(allowed_tables=None, ddl_allowed_tables=frozenset({"film"}))
     assert ReasonCode.DDL_NOT_ALLOWED in _codes(
         decide("ALTER SYSTEM SET work_mem = '64MB'", p)
+    )
+    assert ReasonCode.DDL_NOT_ALLOWED in _codes(
+        decide("SET search_path = pg_catalog, public", p)
     )
 
 
@@ -236,6 +239,8 @@ def test_default_policy_file_loads():
     assert "password" in p.blocked_columns["staff"]
     assert p.simulation.enabled is True
     assert p.simulation.block_over_rows == 100000
+    assert p.undo.block_non_reversible is True
+    assert p.undo.require_agent_match is True
 
 
 # --- Blast-radius thresholds (apply_blast_radius, pure) ----------------------

@@ -1,4 +1,4 @@
-"""Benchmark campaign runner 
+"""Benchmark campaign runner
 
 Runs the A/B/C harness across a rate sweep, both views (pure-overhead SELECT 1
 and the realistic mix), and >=5 interleaved runs; records everything into
@@ -462,13 +462,12 @@ def write_results(cells, cfg: Config, duration_s: float) -> None:
         "- **Sample volume:** the spec's 200k/cell across the full matrix is hours "
         "on this hardware; we report exact N/cell above and prioritized p99 "
         "credibility (>=5 runs, spread) over p99.9 precision.\n"
-        "- **CI gate** (`benchmarks/ci_latency_gate.py`) runs a scaled-down, "
-        "same-shape open-loop check and fails the build if the paired B−A p99 > "
-        "5 ms (`uv run python -m benchmarks.ci_latency_gate`, exit 1 on fail). "
-        "**By deliberate project decision the `benchmarks/` folder is kept off "
-        "GitHub**, so this is a *local* pre-commit/pre-release gate rather than a "
-        "GitHub-CI gate; un-ignoring the folder is all that's needed to make it a "
-        "true CI gate if that policy ever changes.\n",
+        "- **Latency gate** (`benchmarks/ci_latency_gate.py`) runs a scaled-down, "
+        "same-shape open-loop check and fails if the paired B−A p99 > 5 ms "
+        "(`uv run python -m benchmarks.ci_latency_gate`, exit 1 on fail). The "
+        "benchmark harness is committed, but this project does not currently "
+        "include GitHub Actions or another hosted CI runner, so the gate is local "
+        "until wired into CI.\n",
     ]
     RESULTS_PATH.write_text("\n".join(out))
     print(f"\nWrote {RESULTS_PATH}")

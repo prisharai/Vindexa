@@ -22,7 +22,7 @@ classify → policy decision. Budget: **added p99 < 5 ms** on the pass-through p
 |---|---|---|---|
 | `decide()` warm (parse cache hit) | **2.6 µs** | **2.7 µs** | repeated/looping agent queries — effectively free |
 | `decide()` cold (first sight: parse+classify+decide) | **166 µs** | **189 µs** | worst case, a never-seen query; ~26× under the 5 ms budget |
-| huge-input rejection (pre-parse size cap) | **2 µs** | — | 40 KB pathological input fails closed via an O(1) check before pglast |
+| pathological-input rejection (pre-parse guards) | **2 µs** | — | oversized, high-comma, or deeply nested inputs fail closed before pglast |
 
 End-to-end (through the MCP adapter + Postgres round trip), from the paired A/B/C
 campaign in `RESULTS.md`:
@@ -54,12 +54,12 @@ campaign in `RESULTS.md`:
 | **False-positive rate** (green over-blocks) | **0%** (0 / 18) |
 | Evasion matrix | 7 dangerous bases × 7 disguises (comments/casing/whitespace/quoting) |
 | Edge-case fuzz | 200 random byte strings + boundary inputs, **0 crashes** |
-| Total automated tests | **287** passing |
+| Total automated tests | **294** passing |
 
 > Classification is on the real Postgres AST (`pglast`), never string matching, so
 > comments, casing, whitespace, alias stars, whole-row refs, and wrapped writes
 > are all normalized before the policy sees them.
-> Reproduce: `pytest tests/test_corpus.py -s` (prints the FN/FP report).
+> Reproduce: `uv run pytest tests/test_corpus.py -s` (prints the FN/FP report).
 
 ---
 
@@ -86,7 +86,7 @@ Measuring a risky write's true impact *before* deciding, via a time-boxed
   strict gating and time-boxing.
 
 > Reproduce: see the script under "blast-radius exactness" in the project notes,
-> or `pytest tests/test_simulate.py`.
+> or `uv run pytest tests/test_simulate.py`.
 
 ---
 
@@ -107,7 +107,7 @@ atomic.
   cascades, and already-consumed sequences cannot be undone; this is stated in
   the structured `undo_reason` when a write is recorded as non-reversible.
 
-> Reproduce: `pytest tests/test_undo.py`.
+> Reproduce: `uv run pytest tests/test_undo.py`.
 
 ---
 
@@ -119,7 +119,7 @@ LLM "second opinion" is **async/out-of-band, on the risky subset only, never
 blocking, never on the hot path**. No latency is added to any query the agent is
 waiting on. (Advisory by design — never a sole gate.)
 
-> Reproduce: `pytest tests/test_intent.py`.
+> Reproduce: `uv run pytest tests/test_intent.py`.
 
 ---
 

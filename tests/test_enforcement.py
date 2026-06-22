@@ -144,6 +144,7 @@ async def test_risky_write_held_until_operator_approval(make_session, scratch):
     # Agent attempt: held for confirmation, blast radius measured, NOT executed.
     res = await sess.run_query(sql)
     assert res["requires_confirmation"] is True
+    assert res["approval_id"]
     assert res["blocked"] is False
     assert res["simulation"]["exact_rows"] == 29
     assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
@@ -186,6 +187,33 @@ def test_agent_tool_has_no_confirmation_bypass():
     assert "operator_approved" not in params  # operator seam is server-side only
 
 
+async def test_operator_approval_requires_token(make_session, scratch):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    sess._operator_token = "secret-operator-token"
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+    approval_id = held["approval_id"]
+
+    denied = await sess.approve_query(
+        approval_id, operator_token="wrong", operator="human-1"
+    )
+    assert denied["ok"] is False
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
+
+    approved = await sess.approve_query(
+        approval_id, operator_token="secret-operator-token", operator="human-1"
+    )
+    assert approved["ok"] is True
+    assert approved["status"] == "DELETE 29"
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 21
+
+
 async def test_reads_are_not_simulated_through_adapter(make_session):
     sess, _ = await make_session(
         Policy(
@@ -221,6 +249,33 @@ async def test_write_is_reversible_through_adapter(make_session, scratch):
     assert rev["ok"] is True
     assert rev["operation"] == "update"
     assert await scratch.fetchval(tagged) == 0  # labels restored to NULL
+
+
+async def test_revert_requires_same_agent_or_operator_token(make_session, scratch):
+    sess, _ = await make_session(
+        Policy(allowed_tables=None, undo=UndoConfig(enabled=True))
+    )
+    sess._operator_token = "secret-operator-token"
+    await scratch.execute("ALTER TABLE _sim_scratch ADD COLUMN label text")
+    res = await sess.run_query(
+        "UPDATE _sim_scratch SET label = 'tagged' WHERE id = 1",
+        agent="agent-owner",
+    )
+    denied = await sess.revert_write(res["undo_action_id"], agent="agent-other")
+    assert denied["ok"] is False
+    assert denied["unauthorized"] is True
+    assert (
+        await scratch.fetchval("SELECT label FROM _sim_scratch WHERE id = 1")
+        == "tagged"
+    )
+
+    approved = await sess.revert_write(
+        res["undo_action_id"],
+        agent="agent-other",
+        operator_token="secret-operator-token",
+    )
+    assert approved["ok"] is True
+    assert await scratch.fetchval("SELECT label FROM _sim_scratch WHERE id = 1") is None
 
 
 async def test_reads_carry_no_undo_action(make_session):
@@ -330,9 +385,18 @@ async def test_non_reversible_reason_is_surfaced(make_session, scratch):
     res = await sess.run_query(
         "UPDATE _sim_scratch t SET id = id FROM (SELECT 1 AS x) s WHERE t.id = 1"
     )
+    assert res["blocked"] is True
     assert res["reversible"] is False
     assert res["undo_reason"] is not None
     assert "FROM/USING" in res["undo_reason"]
+
+
+async def test_audit_status_reports_queue_health(make_session):
+    sess, _ = await make_session(Policy(allowed_tables=None))
+    status = sess.audit_status()
+    assert status["running"] is True
+    assert status["dropped"] == 0
+    assert status["queue_max"] > 0
 
 
 async def test_bulk_equality_write_is_simulated_pk_point_write_is_not():

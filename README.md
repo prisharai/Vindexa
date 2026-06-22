@@ -1,17 +1,18 @@
 # Agent DB Safety
 
-**A runtime safety layer that sits between AI agents and a database (Postgres
-first), making risky agent-issued writes safe *before* they commit and
-reversible *after*.**
+**Developer preview.** A runtime safety layer that sits between AI agents and a
+database (Postgres first), making risky agent-issued writes safe *before* they
+commit and reversible *after*.
 
 Every statement an agent sends is parsed to a real Postgres AST, classified, and
 checked against a deterministic policy. Genuinely risky writes have their **blast
 radius simulated** ("this would modify 2.3M rows") before any decision is made;
-allowed writes are **recorded so they can be instantly undone**; and a blocked
-statement comes back with a **structured, machine-readable explanation** so the
-agent can self-correct and retry. The load-bearing safety is deterministic and
-fast — anything probabilistic (LLM-based intent checks) is strictly advisory and
-never on the hot path.
+reversible writes are recorded so they can be undone; writes that cannot be
+recorded for safe undo are blocked by default. A blocked statement comes back
+with a **structured, machine-readable explanation** so the agent can self-correct
+and retry. The load-bearing safety is deterministic and fast -- anything
+probabilistic (LLM-based intent checks) is strictly advisory and never on the hot
+path.
 
 ---
 
@@ -37,10 +38,10 @@ the two capabilities that blocking alone can't provide, plus one advisory check:
 1. **Blast-radius simulation** — quantify a risky write's *real* impact before
    deciding (exact affected rows, via a time-boxed `BEGIN; … ; ROLLBACK`), not
    just pattern-match the statement text.
-2. **Reversibility / instant undo** — every allowed write records a before-image,
-   so it can be reverted with one conditional, atomic call and a full audit
-   trail. Prevention catches the obvious; reversibility covers everything
-   prediction provably cannot (intent is undecidable in general).
+2. **Reversibility / instant undo** — reversible writes record before/after
+   images, so they can be reverted with one conditional, atomic call. Writes that
+   cannot be captured safely are blocked by default, rather than executing and
+   surprising the operator after the fact.
 3. **Intent-mismatch detection (advisory only)** — flag when a query's blast
    radius contradicts the agent's stated task. A flag, never a sole gate, and
    never on the hot path.
@@ -70,25 +71,26 @@ the two capabilities that blocking alone can't provide, plus one advisory check:
    revert(f47d5868…) -> restored 1 row; balance back to 200
 ```
 
-Run it yourself (needs the dev Postgres up): `python -m examples.demo`
+Run it yourself (needs the dev Postgres up): `uv run python -m examples.demo`
 (source: [`examples/demo.py`](examples/demo.py)).
 
 ## Measured results
 
 The non-negotiable engineering constraint is **do not slow down the database**: a
 safety layer that adds latency to normal traffic gets ripped out. The budget is
-**added p99 < 5 ms** on the pass-through path, enforced by a benchmark gate.
+**added p99 < 5 ms** on the pass-through path, checked by a local benchmark gate.
 
 | What | Result |
 |---|---|
 | Hot-path cost, warm (parse-cache hit) | **2.6 µs** p50 / 2.7 µs p99 |
-| Hot-path cost, cold (first sight of a query) | **166 µs** p50 / 189 µs p99 (~26× under budget) |
-| End-to-end pass-through overhead (vs direct asyncpg) | **≈ 0 ms** p50 & p99 (at the noise floor) — **gate PASS** |
+| Hot-path cost, cold (normal first sight of a query) | **166 µs** p50 / 189 µs p99 on the measured benchmark shape |
+| Pathological SQL guard | Oversized or high-complexity inputs fail closed before parsing |
+| End-to-end pass-through overhead (vs direct asyncpg) | **≈ 0 ms** p50 & p99 (at the noise floor) -- local gate PASS |
 | Red corpus blocked (false-negative rate) | 38 statements, **0%** |
 | Green corpus allowed (false-positive rate) | 18 statements, **0%** |
 | Blast-radius accuracy (precise path) | **exact** — 664 measured vs a planner estimate of 0 |
 | Undo round-trip | ~4 ms, conflict-checked, exact restore |
-| Automated tests | **287** passing |
+| Automated tests | **294** passing |
 
 Full latency methodology, per-rate tables, and validity checks are in
 [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md); all numbers with how they were
@@ -121,6 +123,9 @@ agent ──(MCP today / wire-protocol later)──> [thin adapter] ──> [SAF
   Simulation is opt-in, gated to risky writes, and time-boxed
   (`statement_timeout` + `lock_timeout`). Audit logging and intent checks are
   async/out-of-band. Writes fail closed on uncertainty; reads fail open.
+- **Approval and undo controls:** confirmation-gated writes are held with an
+  approval id and require `AGENT_OPERATOR_TOKEN` for execution. Reverts are bound
+  to the originating agent unless the same operator token is supplied.
 
 ## Honest limits
 
@@ -132,10 +137,17 @@ Kept visible on purpose — this honesty is a feature:
 - `BEGIN/ROLLBACK` simulation can't roll back external side effects (triggers
   calling out, already-consumed sequences) and takes locks — hence the gating and
   time-boxing.
-- Reversibility isn't infinite (external calls, cascades, consumed sequences);
-  when a write can't be perfectly reverted, the response says so.
+- Reversibility isn't infinite (external calls, cascades, consumed sequences).
+  Shapes that cannot be recorded for safe undo are blocked by default; local
+  evaluation can opt out with `undo.block_non_reversible: false`.
+- Audit logging is non-blocking. If the audit writer cannot keep up, records are
+  dropped rather than stalling queries; use the `audit_status` MCP tool to monitor
+  queue depth and dropped-record count. The local JSONL log is not tamper-proof.
 - LLM intent checks are non-deterministic — advisory only, never the last line of
   defense, never on the hot path.
+- This is a local developer preview, not a production deployment recipe. Use a
+  least-privilege Postgres role and review policies before pointing it at real
+  data.
 
 ## Quickstart
 
@@ -148,13 +160,19 @@ Prerequisites: [Docker](https://docs.docker.com/get-docker/) (Compose v2) and
 docker compose up -d
 
 # 2. Install the Python env from the lockfile.
-uv sync
+uv sync --frozen
 
 # 3. Run the test suite (skips DB-backed tests cleanly if Postgres isn't up).
 uv run pytest
 
 # 4. See the safety layer in action end-to-end.
 uv run python -m examples.demo
+
+# 5. Start the MCP server for an agent/client.
+AGENT_OPERATOR_TOKEN=dev-operator-token uv run python -m adapters.mcp_server
+
+# 6. Run the local latency gate.
+uv run python -m benchmarks.ci_latency_gate
 ```
 
 First `docker compose up` generates ~5M rows and takes 1–2 minutes; later starts
@@ -163,6 +181,26 @@ are instant (data lives in a Docker volume). Connect with any client over
 `docker exec -it agent-db-safety-pg psql -U postgres -d pagila`. To re-seed from
 scratch: `docker compose down -v && docker compose up -d`. The test suite reads
 `AGENT_DB_DSN` if set.
+
+Useful environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGENT_DB_DSN` | `postgresql://postgres:postgres@localhost:5433/pagila` | Target Postgres database. The default is local-dev only. |
+| `AGENT_POLICY` | `policies/default.yaml` | YAML policy file loaded at startup. |
+| `AGENT_AUDIT_LOG` | `logs/audit.jsonl` | Async JSONL audit/shadow log path. |
+| `AGENT_OPERATOR_TOKEN` | unset | Required by `approve_query`; without it, held writes cannot be approved through MCP. |
+| `AGENT_POOL_MIN` / `AGENT_POOL_MAX` | `1` / `10` | asyncpg pool sizing. |
+
+MCP tools exposed by the server:
+
+| Tool | Purpose |
+|---|---|
+| `run_query(sql, stated_task?)` | Classify, policy-check, optionally simulate, then execute or block a statement. |
+| `list_pending_approvals()` | Show writes currently held for operator approval. |
+| `approve_query(approval_id, operator_token)` | Execute a held write when the operator token matches `AGENT_OPERATOR_TOKEN`. |
+| `revert_write(action_id, operator_token?)` | Revert a recorded write. The originating agent may revert its own action; the operator token overrides that check. |
+| `audit_status()` | Show audit queue depth, dropped-record count, and log path. |
 
 ## Repo layout
 
@@ -174,5 +212,5 @@ corpus/      # red (should-block) + green (should-allow) query sets
 benchmarks/  # open-loop latency harness, RESULTS.md, METRICS.md, CI latency gate
 examples/    # runnable end-to-end demo
 db/          # Docker Postgres seed scripts (Pagila + large tables)
-tests/       # pytest suite (287 tests: policy, simulation, undo, evasion, edge, compat)
+tests/       # pytest suite (294 tests: policy, simulation, undo, evasion, edge, compat)
 ```

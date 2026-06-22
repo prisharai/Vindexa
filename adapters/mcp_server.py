@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import asyncpg
 from mcp.server.fastmcp import Context, FastMCP
@@ -17,7 +18,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from engine.audit import AuditLog
 from engine.classifier import DDL, WRITE, classify
 from engine.intent import check_intent, llm_second_opinion
-from engine.policy import Policy, apply_blast_radius, apply_intent, evaluate
+from engine.policy import Policy, ReasonCode, apply_blast_radius, apply_intent, evaluate
 from engine.simulate import is_risky_write, load_unique_columns, simulate
 from engine.undo import UndoStore, execute_with_undo, revert
 
@@ -37,6 +38,19 @@ POLICY_PATH = os.environ.get(
 # a connection is free). Sized small for dev.
 POOL_MIN_SIZE = int(os.environ.get("AGENT_POOL_MIN", "1"))
 POOL_MAX_SIZE = int(os.environ.get("AGENT_POOL_MAX", "10"))
+OPERATOR_TOKEN = os.environ.get("AGENT_OPERATOR_TOKEN")
+
+
+@dataclass(frozen=True)
+class PendingApproval:
+    """A held write awaiting out-of-band operator approval."""
+
+    sql: str
+    stated_task: str | None
+    agent: str | None
+    created_at: float
+    simulation: dict | None
+    intent: dict | None
 
 
 class ShadowSession:
@@ -50,6 +64,7 @@ class ShadowSession:
         undo_store: UndoStore | None = None,
         llm_assessor=None,
         unique_columns: frozenset[str] = frozenset(),
+        operator_token: str | None = None,
     ) -> None:
         self._pool = pool
         self._audit = audit
@@ -62,7 +77,24 @@ class ShadowSession:
         # Optional async callable (prompt)->str for the advisory LLM second
         # opinion. None (default) => the LLM check never runs.
         self._llm_assessor = llm_assessor
+        self._operator_token = operator_token
+        self._pending_approvals: dict[str, PendingApproval] = {}
         self._bg_tasks: set[asyncio.Task] = set()
+
+    def _operator_allowed(self, token: str | None) -> bool:
+        """True only when operator approval is enabled and the token matches."""
+        return bool(self._operator_token) and token == self._operator_token
+
+    def _approval_summary(self, approval_id: str, pending: PendingApproval) -> dict:
+        return {
+            "approval_id": approval_id,
+            "sql": pending.sql,
+            "stated_task": pending.stated_task,
+            "agent": pending.agent,
+            "created_at": pending.created_at,
+            "simulation": pending.simulation,
+            "intent": pending.intent,
+        }
 
     def _maybe_schedule_llm(
         self, stated_task, classification, affected, agent, flag=None
@@ -124,7 +156,7 @@ class ShadowSession:
         agent: str | None = None,
         operator_approved: bool = False,
     ) -> dict[str, Any]:
-        """Evaluate policy, optionally simulate risky writes, then execute the statement."""
+        """Evaluate policy, optionally simulate risky writes, then execute."""
         # Parse + classify on the hot path -- both LRU-cached, pure, ~0.1 ms cold.
         classification = classify(sql)
 
@@ -223,6 +255,15 @@ class ShadowSession:
             and enforce
             and not operator_approved
         ):
+            approval_id = str(uuid4())
+            self._pending_approvals[approval_id] = PendingApproval(
+                sql=sql,
+                stated_task=stated_task,
+                agent=agent,
+                created_at=time.time(),
+                simulation=decision.simulation,
+                intent=decision.intent,
+            )
             self._audit.record(
                 {
                     "event": "query",
@@ -231,6 +272,7 @@ class ShadowSession:
                     "sql": sql,
                     "blocked": False,
                     "requires_confirmation": True,
+                    "approval_id": approval_id,
                     "simulation": decision.simulation,
                     "intent": decision.intent,
                     "classification": classification.to_dict(),
@@ -244,6 +286,7 @@ class ShadowSession:
                 "blocked": False,
                 "violations": [],
                 "requires_confirmation": True,
+                "approval_id": approval_id,
                 "simulation": decision.simulation,
                 "intent": decision.intent,
             }
@@ -286,6 +329,53 @@ class ShadowSession:
                     action_id, reversible = outcome.action_id, outcome.reversible
                     # When not reversible, tell the agent why (structured).
                     undo_reason = None if outcome.reversible else outcome.reason
+                    if outcome.blocked:
+                        violation = {
+                            "reason_code": ReasonCode.NON_REVERSIBLE_WRITE,
+                            "message": (
+                                "Write was not executed because it cannot be "
+                                "recorded for safe undo."
+                            ),
+                            "suggested_fix": (
+                                "Use a simple INSERT, UPDATE, or DELETE on a "
+                                "primary-keyed table, or explicitly disable "
+                                "undo.block_non_reversible for local evaluation."
+                            ),
+                            "statement_index": 0,
+                        }
+                        self._audit.record(
+                            {
+                                "event": "query",
+                                "agent": agent,
+                                "stated_task": stated_task,
+                                "sql": sql,
+                                "blocked": True,
+                                "violations": [violation],
+                                "undo_reason": undo_reason,
+                                "decision": (
+                                    decision.to_dict() if decision is not None else None
+                                ),
+                                "classification": classification.to_dict(),
+                            }
+                        )
+                        return {
+                            "status": None,
+                            "rows": [],
+                            "row_count": 0,
+                            "error": None,
+                            "blocked": True,
+                            "violations": [violation],
+                            "requires_confirmation": False,
+                            "simulation": (
+                                decision.simulation if decision is not None else None
+                            ),
+                            "undo_action_id": None,
+                            "reversible": False,
+                            "undo_reason": undo_reason,
+                            "intent": (
+                                decision.intent if decision is not None else None
+                            ),
+                        }
                 else:
                     # prepare()+fetch() runs the statement once and exposes BOTH
                     # the returned rows and the command tag -- see DECISIONS.
@@ -329,6 +419,7 @@ class ShadowSession:
             "blocked": False,
             "violations": [],
             "requires_confirmation": False,
+            "approval_id": None,
             "simulation": decision.simulation if decision is not None else None,
             "undo_action_id": action_id,
             "reversible": reversible,
@@ -336,16 +427,85 @@ class ShadowSession:
             "intent": decision.intent if decision is not None else None,
         }
 
+    async def approve_query(
+        self,
+        approval_id: str,
+        *,
+        operator_token: str | None,
+        operator: str | None = None,
+    ) -> dict[str, Any]:
+        """Approve and execute a held write using an operator token."""
+        if not self._operator_allowed(operator_token):
+            self._audit.record(
+                {
+                    "event": "approval_denied",
+                    "operator": operator,
+                    "approval_id": approval_id,
+                }
+            )
+            return {
+                "ok": False,
+                "approval_id": approval_id,
+                "error": "operator approval token is missing or invalid",
+            }
+        pending = self._pending_approvals.pop(approval_id, None)
+        if pending is None:
+            return {
+                "ok": False,
+                "approval_id": approval_id,
+                "error": "no such pending approval",
+            }
+        self._audit.record(
+            {
+                "event": "approval_granted",
+                "operator": operator,
+                **self._approval_summary(approval_id, pending),
+            }
+        )
+        result = await self.run_query(
+            pending.sql,
+            stated_task=pending.stated_task,
+            agent=pending.agent,
+            operator_approved=True,
+        )
+        return {"ok": result.get("error") is None, "approval_id": approval_id, **result}
+
+    def pending_approvals(self) -> list[dict[str, Any]]:
+        """Current in-memory held writes, safe to show to an operator."""
+        return [
+            self._approval_summary(approval_id, pending)
+            for approval_id, pending in self._pending_approvals.items()
+        ]
+
     async def revert_write(
-        self, action_id: str, *, agent: str | None = None
+        self,
+        action_id: str,
+        *,
+        agent: str | None = None,
+        operator_token: str | None = None,
     ) -> dict[str, Any]:
         """Undo a previously-recorded write by its action id. Itself audited."""
         if self._undo_store is None:
             return {"ok": False, "action_id": action_id, "error": "undo not enabled"}
+        operator_override = self._operator_allowed(operator_token)
+        require_agent_match = (
+            bool(self._policy and self._policy.undo.require_agent_match)
+            and not operator_override
+        )
         async with self._pool.acquire() as conn:
-            result = await revert(conn, action_id, self._undo_store, agent=agent)
+            result = await revert(
+                conn,
+                action_id,
+                self._undo_store,
+                agent=agent,
+                require_agent_match=require_agent_match,
+            )
         self._audit.record({"event": "revert", "agent": agent, **result.to_dict()})
         return result.to_dict()
+
+    def audit_status(self) -> dict[str, Any]:
+        """Expose audit queue health so dropped records are visible."""
+        return self._audit.status()
 
 
 @dataclass
@@ -379,7 +539,12 @@ async def lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     try:
         yield AppContext(
             session=ShadowSession(
-                pool, audit, policy, undo_store, unique_columns=unique_columns
+                pool,
+                audit,
+                policy,
+                undo_store,
+                unique_columns=unique_columns,
+                operator_token=OPERATOR_TOKEN,
             ),
             audit=audit,
             pool=pool,
@@ -424,7 +589,36 @@ async def run_query(
 
 
 @mcp.tool()
-async def revert_write(action_id: str, ctx: Context) -> dict[str, Any]:
+async def approve_query(
+    approval_id: str,
+    operator_token: str,
+    ctx: Context,
+) -> dict[str, Any]:
+    """Approve and execute a held write.
+
+    This tool requires ``AGENT_OPERATOR_TOKEN`` to be set on the server and the
+    same token to be provided here. Without that token, risky writes remain held.
+    """
+    app: AppContext = ctx.request_context.lifespan_context
+    operator = getattr(ctx, "client_id", None) or ctx.request_id
+    return await app.session.approve_query(
+        approval_id, operator_token=operator_token, operator=operator
+    )
+
+
+@mcp.tool()
+async def list_pending_approvals(ctx: Context) -> dict[str, Any]:
+    """List currently held writes awaiting operator approval."""
+    app: AppContext = ctx.request_context.lifespan_context
+    return {"pending": app.session.pending_approvals()}
+
+
+@mcp.tool()
+async def revert_write(
+    action_id: str,
+    ctx: Context,
+    operator_token: str | None = None,
+) -> dict[str, Any]:
     """Undo a previously-executed write by its ``undo_action_id``.
 
     Restores the affected rows to their captured before-image (UPDATE values
@@ -434,7 +628,16 @@ async def revert_write(action_id: str, ctx: Context) -> dict[str, Any]:
     """
     app: AppContext = ctx.request_context.lifespan_context
     agent = getattr(ctx, "client_id", None) or ctx.request_id
-    return await app.session.revert_write(action_id, agent=agent)
+    return await app.session.revert_write(
+        action_id, agent=agent, operator_token=operator_token
+    )
+
+
+@mcp.tool()
+async def audit_status(ctx: Context) -> dict[str, Any]:
+    """Return audit queue health, including dropped-record count."""
+    app: AppContext = ctx.request_context.lifespan_context
+    return app.session.audit_status()
 
 
 def main() -> None:

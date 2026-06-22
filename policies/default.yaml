@@ -85,6 +85,8 @@ simulation:
 undo:
   enabled: true
   schema: adb_undo
+  block_non_reversible: true
+  require_agent_match: true
 
 # Intent-mismatch detection (advisory). Compares the agent's stated_task to the
 # statement's actual effect and flags contradictions. A HIGH mismatch (e.g. a

@@ -23,6 +23,7 @@ bench = [
 ]
 # Dev-only tooling. Not installed in a production/runtime image.
 dev = [
+    "hdrhistogram>=0.10.7",
     "pytest>=8,<9",
     # The engine is async end-to-end; async tests need this from Day 1.
     "pytest-asyncio>=0.23,<0.25",

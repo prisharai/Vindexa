@@ -36,6 +36,13 @@ _PARSE_CACHE_SIZE = 2048
 # cap; it's a fail-safe against unbounded blowup. Common traffic is unaffected.)
 _MAX_SQL_BYTES = 8000
 
+# Cheap structural caps, also checked before parsing. These protect the latency
+# budget from pathological-but-short statements such as huge IN-lists; a 2 KB
+# comma-heavy query can exceed the 5 ms budget even though it is under the byte
+# ceiling.
+_MAX_COMMAS = 200
+_MAX_PARENS = 400
+
 
 @dataclass(frozen=True)
 class ParseResult:
@@ -63,12 +70,37 @@ def parse(sql: str) -> ParseResult:
     return an empty statement tuple rather than raising, so the request path
     stays branch-free of exceptions.
     """
-    if len(sql) > _MAX_SQL_BYTES:
+    try:
+        byte_len = len(sql.encode("utf-8", errors="surrogatepass"))
+    except UnicodeEncodeError:
+        byte_len = len(sql)
+
+    if byte_len > _MAX_SQL_BYTES:
         # Fail closed BEFORE parsing -- the cheap O(1) guard that protects the
         # latency budget from pathological inputs (sec. 4).
         return ParseResult(
             statements=(),
-            error=f"input too large ({len(sql)} bytes > {_MAX_SQL_BYTES} limit)",
+            error=f"input too large ({byte_len} bytes > {_MAX_SQL_BYTES} limit)",
+        )
+
+    comma_count = sql.count(",")
+    if comma_count > _MAX_COMMAS:
+        return ParseResult(
+            statements=(),
+            error=(
+                f"input too complex ({comma_count} comma-separated elements > "
+                f"{_MAX_COMMAS} limit)"
+            ),
+        )
+
+    paren_count = sql.count("(") + sql.count(")")
+    if paren_count > _MAX_PARENS:
+        return ParseResult(
+            statements=(),
+            error=(
+                f"input too complex ({paren_count} parentheses > "
+                f"{_MAX_PARENS} limit)"
+            ),
         )
     try:
         raw = parse_sql(sql)

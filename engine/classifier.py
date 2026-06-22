@@ -101,8 +101,6 @@ _DDL_STMTS = {
 # is deliberately NOT here -- EXPLAIN ANALYZE actually runs the statement, so it
 # isn't safe by node type alone; Day 3 policy can carve out plain EXPLAIN.
 _SAFE_UTILITY_STMTS = {
-    "TransactionStmt",  # BEGIN / COMMIT / ROLLBACK / SAVEPOINT / RELEASE
-    "VariableSetStmt",  # SET / RESET (session-local)
     "VariableShowStmt",  # SHOW
 }
 

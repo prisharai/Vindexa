@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent DB Safety</title>
+    <meta
+      name="description"
+      content="The safety and undo layer for AI agents touching Postgres."
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Agent DB Safety home">
+        <span class="brand-mark"></span>
+        <span>Agent DB Safety</span>
+      </a>
+      <nav class="nav" aria-label="Primary navigation">
+        <a href="#how">How it works</a>
+        <a href="#start">Start</a>
+        <a href="#status">Status</a>
+      </nav>
+      <a class="nav-cta" href="../README.md">Docs</a>
+    </header>
+
+    <main id="top">
+      <section class="hero section-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">Runtime guardrails for Postgres in agent workflows</p>
+          <h1>The safety and undo layer for AI agents touching Postgres.</h1>
+          <p class="subhead">
+            Preview, policy-check, audit, and undo agent-generated SQL before one
+            wrong query updates, deletes, or exposes too much data.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#start">Get Started</a>
+            <a class="button secondary" href="../README.md">Read Docs</a>
+          </div>
+          <div class="trust-row" aria-label="Product capabilities">
+            <span>AST parsing</span>
+            <span>Blast-radius simulation</span>
+            <span>Reversible writes</span>
+          </div>
+        </div>
+
+        <aside class="terminal-card" aria-label="Blocked SQL example">
+          <div class="terminal-top">
+            <span></span>
+            <span></span>
+            <span></span>
+            <strong>agent-sql</strong>
+          </div>
+          <pre><code><span class="muted">tool:</span> run_query
+<span class="muted">task:</span> downgrade one customer
+<span class="sql">UPDATE users SET plan = 'free';</span>
+
+<span class="danger">BLOCKED</span> WRITE_WITHOUT_WHERE
+message: UPDATE has no WHERE clause and
+         would affect every row.
+fix: Add a WHERE clause that scopes
+     the statement to intended rows.
+
+audit: logs/audit.jsonl
+decision: no database write executed</code></pre>
+        </aside>
+      </section>
+
+      <section class="problem">
+        <div class="section-kicker">Problem</div>
+        <div class="two-col">
+          <h2>Agents can write SQL faster than teams can review the blast radius.</h2>
+          <div class="body-copy">
+            <p>
+              AI agents can now generate and execute database queries as part of
+              normal development workflows. A missing <code>WHERE</code>, an
+              overbroad join, or an accidental catalog read can damage data or
+              expose more than the task required.
+            </p>
+            <p>
+              Migration tools, ORMs, and database version-control systems do not
+              govern live runtime actions from agents. Teams need a control
+              point before they give agents broader database access.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="how" class="flow-section">
+        <div class="section-kicker">How it works</div>
+        <h2>One deterministic decision path before Postgres commits.</h2>
+        <div class="flow">
+          <div class="flow-card">
+            <span>1</span>
+            <h3>Agent sends SQL</h3>
+            <p>The MCP tool receives SQL plus the agent's stated task.</p>
+          </div>
+          <div class="flow-card">
+            <span>2</span>
+            <h3>Parse and classify</h3>
+            <p>Statements are parsed with a real Postgres AST, not regex.</p>
+          </div>
+          <div class="flow-card">
+            <span>3</span>
+            <h3>Policy and simulation</h3>
+            <p>Rules run in memory; risky writes are simulated with timeouts.</p>
+          </div>
+          <div class="flow-card">
+            <span>4</span>
+            <h3>Allow, block, hold, log</h3>
+            <p>Safe writes can be recorded for undo; risky writes need approval.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="features">
+        <div class="section-kicker">Capabilities</div>
+        <div class="feature-grid">
+          <article>
+            <h3>SQL classification</h3>
+            <p>Detects reads, writes, DDL, multi-statement batches, catalog access,
+              locking reads, unsafe functions, wrapped writes, and sensitive
+              column exposure.</p>
+          </article>
+          <article>
+            <h3>Policy enforcement</h3>
+            <p>YAML policy blocks unsafe shapes and returns structured reason
+              codes with suggested fixes.</p>
+          </article>
+          <article>
+            <h3>Blast-radius simulation</h3>
+            <p>Risky writes can run inside a timed transaction and rollback to
+              measure exact affected rows before approval.</p>
+          </article>
+          <article>
+            <h3>Approval gates</h3>
+            <p>Large or contradictory writes are held with an approval id and
+              require an operator token before execution.</p>
+          </article>
+          <article>
+            <h3>Audit logs</h3>
+            <p>Every decision is queued to async JSONL audit logs with visibility
+              into queue depth and dropped-record count.</p>
+          </article>
+          <article>
+            <h3>Undo and reversibility</h3>
+            <p>Reversible writes capture before/after images; unsupported shapes
+              are blocked by default rather than committed without undo.</p>
+          </article>
+          <article>
+            <h3>MCP support</h3>
+            <p>The current adapter exposes MCP tools for query execution,
+              approvals, reverts, pending approvals, and audit health.</p>
+          </article>
+          <article>
+            <h3>Latency posture</h3>
+            <p>The pass-through path is benchmarked locally against a 5 ms p99
+              overhead budget; simulation stays gated to risky writes.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="start" class="start">
+        <div class="section-kicker">Start in 5 minutes</div>
+        <div class="start-layout">
+          <div>
+            <h2>Run the local developer preview.</h2>
+            <p>
+              This repo is backend-only, so the fastest path is the local Postgres
+              fixture plus the MCP server. The default credentials and policy are
+              for evaluation, not production.
+            </p>
+          </div>
+          <div class="command-card">
+            <pre><code>docker compose up -d
+uv sync --frozen
+uv run pytest
+uv run python -m examples.demo
+
+AGENT_OPERATOR_TOKEN=dev-operator-token \
+  uv run python -m adapters.mcp_server
+
+uv run python -m benchmarks.ci_latency_gate</code></pre>
+          </div>
+        </div>
+
+        <div class="embed-grid">
+          <div class="mini-panel">
+            <h3>Environment</h3>
+            <ul>
+              <li><code>AGENT_DB_DSN</code> targets Postgres.</li>
+              <li><code>AGENT_POLICY</code> points at YAML policy.</li>
+              <li><code>AGENT_AUDIT_LOG</code> writes async JSONL logs.</li>
+              <li><code>AGENT_OPERATOR_TOKEN</code> enables approvals.</li>
+            </ul>
+          </div>
+          <div class="mini-panel">
+            <h3>Agent call</h3>
+            <pre><code>run_query({
+  "stated_task": "downgrade user 42",
+  "sql": "UPDATE users SET plan = 'free';"
+})</code></pre>
+          </div>
+          <div class="mini-panel">
+            <h3>Response</h3>
+            <pre><code>{
+  "blocked": true,
+  "violations": [{
+    "reason_code": "WRITE_WITHOUT_WHERE"
+  }],
+  "requires_confirmation": false
+}</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="demo">
+        <div class="section-kicker">Demo scenario</div>
+        <div class="demo-card">
+          <div>
+            <h2>Mass update stopped before commit.</h2>
+            <p>
+              An agent tries <code>UPDATE users SET plan = 'free';</code>. The
+              safety layer detects the missing <code>WHERE</code>, blocks the
+              query, writes an audit record, and returns a machine-readable fix.
+              A scoped bulk update would be simulated first; if it crosses policy
+              thresholds, it is held for operator approval. Reversible writes get
+              an <code>undo_action_id</code>.
+            </p>
+          </div>
+          <pre><code>blocked: true
+reason_code: WRITE_WITHOUT_WHERE
+suggested_fix: Add a WHERE clause.
+audit: logs/audit.jsonl
+undo_action_id: null</code></pre>
+        </div>
+      </section>
+
+      <section class="differentiation">
+        <div class="section-kicker">What it is not</div>
+        <div class="not-grid">
+          <div>Not Dolt or database version control.</div>
+          <div>Not Liquibase, Flyway, Alembic, or migration tooling.</div>
+          <div>Not an ORM or SQL generation layer.</div>
+          <div>Not a replacement database or replacement for RLS.</div>
+        </div>
+        <p>
+          The focus is runtime AI-agent database safety for existing Postgres
+          workflows: preview, policy-check, audit, approval, and undo.
+        </p>
+      </section>
+
+      <section id="status" class="status">
+        <div class="status-panel">
+          <div>
+            <div class="section-kicker">Status</div>
+            <h2>Developer preview.</h2>
+          </div>
+          <p>
+            Built for local evaluation with a seeded Postgres database and MCP
+            adapter. Not yet recommended for production without security review,
+            least-privilege roles, durable/tamper-resistant audit storage, hosted
+            CI, and production deployment hardening.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Agent DB Safety</span>
+      <a href="../README.md">Docs</a>
+      <a href="#">GitHub</a>
+      <a href="mailto:contact@example.com">Contact</a>
+      <span>The safety and undo layer for AI agents touching Postgres.</span>
+    </footer>
+  </body>
+</html>

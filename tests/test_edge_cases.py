@@ -118,6 +118,28 @@ def test_huge_input_is_blocked_within_budget():
     assert elapsed_ms < 5.0, f"huge-input block took {elapsed_ms:.1f} ms (budget 5 ms)"
 
 
+def test_large_literal_list_under_byte_cap_is_blocked_within_budget():
+    # Regression: a few KB of comma-heavy IN-list SQL used to slip under the byte
+    # cap and spend tens of ms in libpg_query.
+    import time
+
+    from engine import classifier, parser
+
+    sql = (
+        "SELECT * FROM film WHERE film_id IN ("
+        + ",".join("1" for _ in range(1000))
+        + ")"
+    )
+    assert len(sql) < 8000
+    parser.cache_clear()
+    classifier.cache_clear()
+    start = time.perf_counter()
+    d = decide(sql, POLICY)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    assert not d.allowed
+    assert elapsed_ms < 5.0, f"complex-input block took {elapsed_ms:.1f} ms"
+
+
 def test_classify_is_total_over_random_bytes():
     # Fuzz-ish: random byte strings must never raise.
     import random

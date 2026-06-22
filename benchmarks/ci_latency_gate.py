@@ -1,4 +1,4 @@
-"""CI latency gate 
+"""CI latency gate
 
 A scaled-down, open-loop version of the benchmark that fails the build if the
 added p99 on the pass-through path (B - A) exceeds 5 ms. Robust to single-run

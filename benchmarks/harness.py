@@ -1,4 +1,4 @@
-"""A/B/C run harness 
+"""A/B/C run harness
 
 Runs the *same* workload through each layer, changing nothing but the layer:
 

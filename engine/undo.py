@@ -22,14 +22,15 @@ one transaction. If any affected row changed since the agent write (or, for a
 DELETE, its key was re-created), revert restores *nothing* and returns a conflict
 for manual resolution -- it never clobbers a later change.
 
-Honest limits (sec. 11) -- these execute normally but come back
-``reversible=False`` with a reason: multi-table ``UPDATE...FROM`` /
+Honest limits (sec. 11) -- by default these are blocked before execution because
+they cannot be safely inverted: multi-table ``UPDATE...FROM`` /
 ``DELETE...USING``, ``MERGE``, data-modifying CTEs, a top-level ``WITH`` on
 UPDATE/DELETE, ``INSERT ... ON CONFLICT`` (upsert), any write with its own
 ``RETURNING``, UPDATEs that change a primary-key column, and tables without a
-primary key (update/insert). Out-of-row effects are not reversed: consumed
-sequence values, ``ON DELETE CASCADE``, external triggers, trigger-maintained
-columns.
+primary key (update/insert). A policy can opt into executing them with
+``reversible=False`` for local experimentation. Out-of-row effects are not
+reversed: consumed sequence values, ``ON DELETE CASCADE``, external triggers,
+trigger-maintained columns.
 """
 
 from __future__ import annotations
@@ -95,6 +96,8 @@ def _capture_write(sql: str) -> str:
 class UndoConfig:
     enabled: bool = False
     schema: str = "adb_undo"
+    block_non_reversible: bool = True
+    require_agent_match: bool = True
 
     @classmethod
     def from_dict(cls, data: dict | None) -> UndoConfig:
@@ -102,6 +105,8 @@ class UndoConfig:
         return cls(
             enabled=bool(data.get("enabled", False)),
             schema=data.get("schema", "adb_undo"),
+            block_non_reversible=bool(data.get("block_non_reversible", True)),
+            require_agent_match=bool(data.get("require_agent_match", True)),
         )
 
 
@@ -116,6 +121,7 @@ class UndoOutcome:
     reversible: bool
     reason: str | None = None  # why not reversible (when reversible is False)
     captured_rows: int | None = None
+    blocked: bool = False
 
 
 @dataclass(frozen=True)
@@ -125,6 +131,7 @@ class RevertResult:
     operation: str | None = None
     rows_restored: int | None = None
     conflict: bool = False
+    unauthorized: bool = False
     error: str | None = None
 
     def to_dict(self) -> dict:
@@ -134,6 +141,7 @@ class RevertResult:
             "operation": self.operation,
             "rows_restored": self.rows_restored,
             "conflict": self.conflict,
+            "unauthorized": self.unauthorized,
             "error": self.error,
         }
 
@@ -337,16 +345,38 @@ async def execute_with_undo(
     """Execute a write, capturing before/after images so it can be reverted.
 
     Capture, the write, and the undo-log row all commit together. A write whose
-    shape we can't safely invert runs normally and comes back reversible=False.
+    shape we can't safely invert is blocked by default; callers may explicitly
+    set ``block_non_reversible=false`` for local experimentation.
     """
     plan, reason = _plan(sql, classification)
     if plan is None:
+        if config.block_non_reversible:
+            return UndoOutcome(
+                None,
+                [],
+                None,
+                None,
+                reversible=False,
+                reason=reason,
+                blocked=True,
+            )
         status, rows, error = await _plain_execute(conn, sql)
         return UndoOutcome(status, rows, error, None, reversible=False, reason=reason)
 
     await store.ensure_schema(conn)
     pk = await store.primary_key(conn, plan.target)
     if plan.operation in ("update", "insert") and not pk:
+        reason = "target has no primary key"
+        if config.block_non_reversible:
+            return UndoOutcome(
+                None,
+                [],
+                None,
+                None,
+                reversible=False,
+                reason=reason,
+                blocked=True,
+            )
         status, rows, error = await _plain_execute(conn, sql)
         return UndoOutcome(
             status,
@@ -354,10 +384,21 @@ async def execute_with_undo(
             error,
             None,
             reversible=False,
-            reason="target has no primary key",
+            reason=reason,
         )
     if plan.operation == "update" and any(c in pk for c in plan.set_columns):
         # Revert matches the old PK; a changed PK can't be matched.
+        reason = "UPDATE modifies a primary-key column"
+        if config.block_non_reversible:
+            return UndoOutcome(
+                None,
+                [],
+                None,
+                None,
+                reversible=False,
+                reason=reason,
+                blocked=True,
+            )
         status, rows, error = await _plain_execute(conn, sql)
         return UndoOutcome(
             status,
@@ -365,7 +406,7 @@ async def execute_with_undo(
             error,
             None,
             reversible=False,
-            reason="UPDATE modifies a primary-key column",
+            reason=reason,
         )
 
     action_id = uuid4()
@@ -457,7 +498,12 @@ def _revert_sql(operation: str, table: str, pk: list[str], cols: list[str]) -> s
 
 
 async def revert(
-    conn, action_id: str, store: UndoStore, *, agent: str | None = None
+    conn,
+    action_id: str,
+    store: UndoStore,
+    *,
+    agent: str | None = None,
+    require_agent_match: bool = False,
 ) -> RevertResult:
     """Reverse a recorded write by its action id. Conditional and atomic.
 
@@ -469,6 +515,13 @@ async def revert(
         return RevertResult(False, action_id, error="no such action_id")
     if rec["status"] == "reverted":
         return RevertResult(False, action_id, error="already reverted")
+    if require_agent_match and rec["agent"] and agent != rec["agent"]:
+        return RevertResult(
+            False,
+            action_id,
+            unauthorized=True,
+            error="agent is not authorized to revert this action",
+        )
 
     op = rec["operation"]
     table = rec["target_table"]
