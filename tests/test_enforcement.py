@@ -5,6 +5,7 @@ never reaches Postgres, an allowed read runs, and an unbounded read comes back
 capped by an injected LIMIT. Skips cleanly when the dev DB isn't up.
 """
 
+import asyncio
 import json
 import os
 
@@ -13,6 +14,7 @@ import pytest
 
 from adapters.mcp_server import ShadowSession
 from engine.audit import AuditLog
+from engine.intent import IntentConfig
 from engine.policy import Policy
 from engine.simulate import SimulationConfig
 from engine.undo import UndoConfig, UndoStore
@@ -228,6 +230,95 @@ async def test_reads_carry_no_undo_action(make_session):
     res = await sess.run_query("SELECT film_id FROM film WHERE film_id = 1")
     assert res["undo_action_id"] is None
     assert res["reversible"] is None  # reads never go through the undo path
+
+
+async def test_intent_mismatch_escalates_to_confirmation_not_block(
+    make_session, scratch
+):
+    # Task implies a single change; the write touches 29 rows -> HIGH mismatch ->
+    # held for confirmation (advisory), never hard-blocked.
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True,
+                precise=True,
+                confirm_over_rows=100000,
+                block_over_rows=100000,
+            ),
+            intent=IntentConfig(enabled=True, single_scope_max=10),
+        )
+    )
+    sql = "UPDATE _sim_scratch SET id = id WHERE id <= 29"
+    res = await sess.run_query(sql, stated_task="fix a single test row")
+    assert res["blocked"] is False  # intent never hard-blocks
+    assert res["requires_confirmation"] is True
+    assert res["intent"]["severity"] == "high"
+    # held -- nothing ran (no undo action recorded, no rows touched is implicit)
+    assert res["status"] is None
+
+    # operator approval lets it through
+    ok = await sess.run_query(
+        sql, stated_task="fix a single test row", operator_approved=True
+    )
+    assert ok["requires_confirmation"] is False
+    assert ok["status"] == "UPDATE 29"
+
+
+async def test_intent_llm_second_opinion_runs_out_of_band(
+    make_session, scratch, tmp_path
+):
+    # The optional LLM check must NOT block the query: it's scheduled as a
+    # background task that only appends to the audit log.
+    calls: list[str] = []
+
+    async def fake_assessor(prompt: str) -> str:
+        calls.append(prompt)
+        return "looks contradictory"
+
+    pool = await asyncpg.create_pool(dsn=DB_DSN, min_size=1, max_size=2)
+    audit = AuditLog(tmp_path / "llm.jsonl")
+    await audit.start()
+    try:
+        policy = Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(enabled=False),
+            intent=IntentConfig(enabled=True, llm_enabled=True),
+        )
+        sess = ShadowSession(pool, audit, policy, None, llm_assessor=fake_assessor)
+        # A risky write (range, not a point write) with read-only language ->
+        # HIGH mismatch -> the LLM second opinion is scheduled out-of-band.
+        res = await sess.run_query(
+            "UPDATE _sim_scratch SET id = id WHERE id <= 5",
+            stated_task="show these rows",
+        )
+        # run_query returned without waiting on the assessor.
+        assert res["blocked"] is False
+        # Drain the out-of-band task, then confirm it ran and was logged.
+        await asyncio.gather(*sess._bg_tasks)
+        assert calls, "assessor should have been invoked out-of-band"
+    finally:
+        await audit.stop()
+        await pool.close()
+
+
+async def test_intent_llm_skipped_for_routine_point_write(make_session, scratch):
+    # QA P1-b: routine point writes must NOT spawn background LLM work.
+    calls: list[str] = []
+
+    async def fake_assessor(prompt: str) -> str:
+        calls.append(prompt)
+        return "ok"
+
+    sess, _ = await make_session(
+        Policy(allowed_tables=None, intent=IntentConfig(enabled=True, llm_enabled=True))
+    )
+    sess._llm_assessor = fake_assessor
+    await sess.run_query(
+        "UPDATE _sim_scratch SET id = id WHERE id = 1", stated_task="update row 1"
+    )
+    await asyncio.gather(*sess._bg_tasks)
+    assert calls == []  # point write -> no LLM
 
 
 async def test_non_reversible_reason_is_surfaced(make_session, scratch):

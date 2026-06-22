@@ -20,6 +20,7 @@ query; see ``engine/audit.py``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from collections.abc import AsyncIterator
@@ -32,8 +33,9 @@ import asyncpg
 from mcp.server.fastmcp import Context, FastMCP
 
 from engine.audit import AuditLog
-from engine.classifier import WRITE, classify
-from engine.policy import Policy, apply_blast_radius, evaluate
+from engine.classifier import DDL, WRITE, classify
+from engine.intent import check_intent, llm_second_opinion
+from engine.policy import Policy, apply_blast_radius, apply_intent, evaluate
 from engine.simulate import is_risky_write, simulate
 from engine.undo import UndoStore, execute_with_undo, revert
 
@@ -75,11 +77,63 @@ class ShadowSession:
         audit: AuditLog,
         policy: Policy | None = None,
         undo_store: UndoStore | None = None,
+        llm_assessor=None,
     ) -> None:
         self._pool = pool
         self._audit = audit
         self._policy = policy
         self._undo_store = undo_store
+        # Optional async callable (prompt)->str for the advisory LLM second
+        # opinion. None (default) => the LLM check never runs.
+        self._llm_assessor = llm_assessor
+        self._bg_tasks: set[asyncio.Task] = set()
+
+    def _maybe_schedule_llm(
+        self, stated_task, classification, affected, agent, flag=None
+    ) -> None:
+        """Fire the advisory LLM check out-of-band; never block the query (sec. 4).
+
+        Restricted to the **risky subset** (Day 6): only a stated task on a risky
+        write with a HIGH deterministic mismatch is worth a second opinion --
+        routine point writes never spawn background network work. Bounded by a
+        concurrency cap; each call is time-boxed.
+        """
+        cfg = self._policy.intent if self._policy else None
+        if not (cfg and cfg.llm_enabled and self._llm_assessor and stated_task):
+            return
+        if not is_risky_write(classification):
+            return
+        if flag is None:
+            flag = check_intent(
+                stated_task,
+                classification,
+                affected,
+                cfg,
+                table_vocab=self._policy.allowed_tables,
+            )
+        if flag.severity != "high":
+            return
+        if len(self._bg_tasks) >= cfg.llm_max_concurrent:
+            return  # shed load rather than pile up unbounded background work
+
+        async def _run() -> None:
+            try:
+                opinion = await asyncio.wait_for(
+                    llm_second_opinion(
+                        stated_task, classification, affected, self._llm_assessor
+                    ),
+                    timeout=cfg.llm_timeout_s,
+                )
+            except TimeoutError:
+                opinion = "llm second opinion timed out"
+            if opinion is not None:
+                self._audit.record(
+                    {"event": "intent_llm", "agent": agent, "opinion": opinion}
+                )
+
+        task = asyncio.create_task(_run())
+        self._bg_tasks.add(task)  # keep a ref so it isn't GC'd mid-flight
+        task.add_done_callback(self._bg_tasks.discard)
 
     def _undo_enabled(self, classification) -> bool:
         """True when this statement should run through the undo-capture path."""
@@ -146,6 +200,33 @@ class ShadowSession:
                 )
             decision = apply_blast_radius(decision, sim, self._policy.simulation)
 
+        # Intent-mismatch (Day 6) -- ADVISORY. Deterministic, in-memory, no I/O.
+        # Compares the stated task to the statement's effect (blast radius from
+        # simulation if measured). A HIGH contradiction may escalate to human
+        # confirmation; it NEVER blocks on its own (sec. 11).
+        if (
+            decision is not None
+            and self._policy.intent.enabled
+            and classification.statements
+            and classification.statements[0].kind in (WRITE, DDL)
+        ):
+            affected = (
+                decision.simulation.get("affected_rows")
+                if decision.simulation
+                else None
+            )
+            flag = check_intent(
+                stated_task,
+                classification,
+                affected,
+                self._policy.intent,
+                table_vocab=self._policy.allowed_tables,
+            )
+            decision = apply_intent(decision, flag, self._policy.intent)
+            # Optional out-of-band LLM second opinion: scheduled (never awaited),
+            # and only on the risky/HIGH subset (see _maybe_schedule_llm).
+            self._maybe_schedule_llm(stated_task, classification, affected, agent, flag)
+
         # Blocked + enforcing: reject without going near the database.
         if decision is not None and not decision.allowed and enforce:
             self._audit.record(
@@ -157,6 +238,7 @@ class ShadowSession:
                     "blocked": True,
                     "violations": [v.to_dict() for v in decision.violations],
                     "simulation": decision.simulation,
+                    "intent": decision.intent,
                     "classification": classification.to_dict(),
                 }
             )
@@ -169,6 +251,7 @@ class ShadowSession:
                 "violations": [v.to_dict() for v in decision.violations],
                 "requires_confirmation": False,
                 "simulation": decision.simulation,
+                "intent": decision.intent,
             }
 
         # Allowed but gated: a risky write whose blast radius needs confirmation.
@@ -189,6 +272,7 @@ class ShadowSession:
                     "blocked": False,
                     "requires_confirmation": True,
                     "simulation": decision.simulation,
+                    "intent": decision.intent,
                     "classification": classification.to_dict(),
                 }
             )
@@ -201,6 +285,7 @@ class ShadowSession:
                 "violations": [],
                 "requires_confirmation": True,
                 "simulation": decision.simulation,
+                "intent": decision.intent,
             }
 
         # Allowed, or observe-mode: decide what actually runs. Only *enforcing*
@@ -270,6 +355,7 @@ class ShadowSession:
                 "undo_action_id": action_id,
                 "reversible": reversible,
                 "undo_reason": undo_reason,
+                "intent": decision.intent if decision is not None else None,
                 "decision": decision.to_dict() if decision is not None else None,
                 "classification": classification.to_dict(),
             }
@@ -287,6 +373,7 @@ class ShadowSession:
             "undo_action_id": action_id,
             "reversible": reversible,
             "undo_reason": undo_reason,
+            "intent": decision.intent if decision is not None else None,
         }
 
     async def revert_write(

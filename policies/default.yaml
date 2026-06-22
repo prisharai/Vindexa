@@ -85,3 +85,15 @@ simulation:
 undo:
   enabled: true
   schema: adb_undo
+
+# Intent-mismatch detection (advisory). Compares the agent's stated_task to the
+# statement's actual effect and flags contradictions. A HIGH mismatch (e.g. a
+# "single record" task that would touch thousands of rows, or read-only language
+# on a write) escalates to human confirmation -- it never blocks on its own. The
+# optional LLM second opinion is async/out-of-band and OFF by default.
+intent:
+  enabled: true
+  single_scope_max: 10      # a "single/specific" task shouldn't exceed this many rows
+  bulk_threshold: 1000      # a scope-less task affecting more than this is noted
+  confirm_on_high: true     # escalate HIGH mismatch to human confirmation
+  llm_enabled: false

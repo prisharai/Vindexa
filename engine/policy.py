@@ -30,6 +30,7 @@ import yaml
 
 from engine import classifier
 from engine.classifier import DDL, UNKNOWN, WRITE, Classification
+from engine.intent import HIGH, IntentConfig, IntentFlag
 from engine.simulate import SimulationConfig, SimulationResult
 from engine.undo import UndoConfig
 
@@ -120,6 +121,9 @@ class Decision:
     # must explicitly confirm before it runs.
     simulation: dict | None = None
     requires_confirmation: bool = False
+    # Intent-mismatch (Day 6): advisory flag; can escalate to confirmation, never
+    # blocks on its own.
+    intent: dict | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -129,6 +133,7 @@ class Decision:
             "violations": [v.to_dict() for v in self.violations],
             "requires_confirmation": self.requires_confirmation,
             "simulation": self.simulation,
+            "intent": self.intent,
         }
 
 
@@ -174,6 +179,7 @@ class Policy:
     blocked_functions: frozenset[str] = _DEFAULT_BLOCKED_FUNCTIONS
     simulation: SimulationConfig = field(default_factory=SimulationConfig)
     undo: UndoConfig = field(default_factory=UndoConfig)
+    intent: IntentConfig = field(default_factory=IntentConfig)
 
     def __post_init__(self) -> None:
         # Config errors fail loudly at construction/load, not silently at runtime.
@@ -216,6 +222,7 @@ class Policy:
             blocked_functions=blocked_functions,
             simulation=SimulationConfig.from_dict(data.get("simulation")),
             undo=UndoConfig.from_dict(data.get("undo")),
+            intent=IntentConfig.from_dict(data.get("intent")),
         )
 
     @classmethod
@@ -538,6 +545,26 @@ def apply_blast_radius(
         config.confirm_over_rows is not None and rows > config.confirm_over_rows
     )
     return replace(decision, simulation=sim, requires_confirmation=needs_confirmation)
+
+
+def apply_intent(
+    decision: Decision, flag: IntentFlag, config: IntentConfig
+) -> Decision:
+    """Fold an advisory intent-mismatch flag into a decision. Pure.
+
+    Always attaches the flag for the audit trail. A HIGH-severity contradiction
+    may escalate an *allowed* write to ``requires_confirmation`` (human review) --
+    but intent NEVER blocks on its own (sec. 11): a blocked decision stays
+    blocked-for-its-own-reasons and is never un-blocked here either.
+    """
+    if not flag.mismatch:
+        return replace(decision, intent=flag.to_dict())
+    escalate = decision.allowed and config.confirm_on_high and flag.severity == HIGH
+    return replace(
+        decision,
+        intent=flag.to_dict(),
+        requires_confirmation=decision.requires_confirmation or escalate,
+    )
 
 
 def decide(sql: str, policy: Policy) -> Decision:
