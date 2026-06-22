@@ -93,3 +93,70 @@
 - sql: "SELECT FROM WHERE ;;;"
   why: "unparseable -> fail closed"
   expect: UNPARSEABLE
+
+# --- Evasion variants: same dangers wearing a disguise. Because we classify the
+# --- AST (never the raw text), comments / casing / whitespace / quoting can't
+# --- sneak anything past. Every one of these MUST still block.
+
+- sql: "/* cleanup */ DELETE FROM rental -- safe, trust me"
+  why: "evasion: comments around a bare DELETE -- parser strips them"
+  expect: WRITE_WITHOUT_WHERE
+
+- sql: "DELETE FROM rental /* WHERE rental_id = 1 */"
+  why: "evasion: the WHERE is commented out -> still a bare DELETE"
+  expect: WRITE_WITHOUT_WHERE
+
+- sql: "dRoP tAbLe film"
+  why: "evasion: mixed casing -- SQL keywords are case-insensitive"
+  expect: DDL_NOT_ALLOWED
+
+- sql: "DELETE\n\tFROM\n   rental"
+  why: "evasion: newlines/tabs as whitespace -- still a bare DELETE"
+  expect: WRITE_WITHOUT_WHERE
+
+- sql: "SELECT 1; /* hi */ DROP TABLE film;"
+  why: "evasion: a second statement smuggled past a comment"
+  expect: MULTI_STATEMENT
+
+- sql: "SELECT relname FROM \"pg_catalog\".\"pg_class\""
+  why: "evasion: quoted identifiers don't hide system-catalog access"
+  expect: SYSTEM_CATALOG_ACCESS
+
+- sql: "SELECT PG_SLEEP(60)"
+  why: "evasion: upper-cased function name -- match is case-insensitive"
+  expect: FUNCTION_NOT_ALLOWED
+
+- sql: "SELECT * FROM public.secret_accounts WHERE id = 1"
+  why: "evasion: schema-qualifying a disallowed table doesn't allow it"
+  expect: TABLE_NOT_ALLOWED
+
+- sql: "WITH d AS (DELETE FROM rental RETURNING *) SELECT count(*) FROM d"
+  why: "evasion: a delete-all hidden in a data-modifying CTE under a SELECT"
+  expect: WRITE_WITHOUT_WHERE
+
+- sql: "DO $$ BEGIN DELETE FROM rental; END $$"
+  why: "evasion: dangerous logic hidden in an unparseable procedural body"
+  expect: DDL_NOT_ALLOWED
+
+# --- QA-found leaks (Day 8 review): alias/whole-row column projections and
+# --- writes wrapped in EXPLAIN ANALYZE. Permanent regressions.
+
+- sql: "SELECT s.* FROM staff s WHERE staff_id = 1"
+  why: "alias star -- s.* resolves to staff.* and leaks staff.password"
+  expect: COLUMN_BLOCKED
+
+- sql: "SELECT row_to_json(s) FROM staff s WHERE staff_id = 1"
+  why: "whole-row projection of staff via row_to_json leaks all columns"
+  expect: COLUMN_BLOCKED
+
+- sql: "SELECT s FROM staff s WHERE staff_id = 1"
+  why: "bare alias is a whole-row reference to staff"
+  expect: COLUMN_BLOCKED
+
+- sql: "EXPLAIN ANALYZE DELETE FROM rental WHERE rental_id = 1"
+  why: "EXPLAIN ANALYZE actually EXECUTES the wrapped DELETE"
+  expect: WRAPPED_WRITE
+
+- sql: "EXPLAIN ANALYZE UPDATE film SET rental_rate = 1 WHERE film_id = 1"
+  why: "EXPLAIN ANALYZE executes the wrapped UPDATE"
+  expect: WRAPPED_WRITE

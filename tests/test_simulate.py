@@ -39,28 +39,34 @@ ON = SimulationConfig(enabled=True, precise=True)
 
 
 def test_risky_write_predicate():
+    # The unique/PK columns the adapter loads at startup; a point write is only
+    # routine when scoped to one of these.
+    uniq = frozenset({"film.film_id", "rental.rental_id"})
+
     # Risky = a bulk-shaped single write whose blast radius isn't obvious.
     assert is_risky_write(
-        classify("UPDATE film SET rental_rate = 1 WHERE rental_rate < 3")
+        classify("UPDATE film SET rental_rate = 1 WHERE rental_rate < 3"), uniq
     )
-    assert is_risky_write(classify("DELETE FROM rental WHERE inventory_id > 100"))
+    assert is_risky_write(classify("DELETE FROM rental WHERE inventory_id > 100"), uniq)
     # data-modifying CTE is routed in (so it fails closed)
     assert is_risky_write(
-        classify("WITH d AS (DELETE FROM rental RETURNING *) SELECT * FROM d")
+        classify("WITH d AS (DELETE FROM rental RETURNING *) SELECT * FROM d"), uniq
     )
-    # NOT risky -- routine shapes that shouldn't pay simulation cost:
+    # Equality on a NON-unique column is bulk-capable -> still risky (QA P0).
+    assert is_risky_write(
+        classify("UPDATE app_event SET amount = 0 WHERE customer_id = 1"), uniq
+    )
+    # NOT risky -- point writes scoped to a known unique/PK column:
     assert not is_risky_write(
-        classify("UPDATE film SET rental_rate=1 WHERE film_id = 1")
-    )  # point
-    assert not is_risky_write(
-        classify("DELETE FROM rental WHERE rental_id = 5")
-    )  # point
-    assert not is_risky_write(
-        classify("INSERT INTO film (title) VALUES ('x')")
-    )  # insert
-    assert not is_risky_write(classify("SELECT * FROM film"))  # read
-    assert not is_risky_write(classify("DROP TABLE film"))  # ddl
-    assert not is_risky_write(classify("UPDATE film SET x=1; SELECT 1"))  # multi
+        classify("UPDATE film SET rental_rate=1 WHERE film_id = 1"), uniq
+    )
+    assert not is_risky_write(classify("DELETE FROM rental WHERE rental_id = 5"), uniq)
+    assert not is_risky_write(classify("INSERT INTO film (title) VALUES ('x')"), uniq)
+    assert not is_risky_write(classify("SELECT * FROM film"), uniq)  # read
+    assert not is_risky_write(classify("DROP TABLE film"), uniq)  # ddl
+    assert not is_risky_write(classify("UPDATE film SET x=1; SELECT 1"), uniq)  # multi
+    # No metadata -> conservative: even a PK point write is simulated.
+    assert is_risky_write(classify("UPDATE film SET rental_rate=1 WHERE film_id = 1"))
 
 
 async def test_disabled_config_skips(conn):

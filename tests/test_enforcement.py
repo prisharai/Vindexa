@@ -16,7 +16,7 @@ from adapters.mcp_server import ShadowSession
 from engine.audit import AuditLog
 from engine.intent import IntentConfig
 from engine.policy import Policy
-from engine.simulate import SimulationConfig
+from engine.simulate import SimulationConfig, load_unique_columns
 from engine.undo import UndoConfig, UndoStore
 
 DB_DSN = os.environ.get(
@@ -333,3 +333,43 @@ async def test_non_reversible_reason_is_surfaced(make_session, scratch):
     assert res["reversible"] is False
     assert res["undo_reason"] is not None
     assert "FROM/USING" in res["undo_reason"]
+
+
+async def test_bulk_equality_write_is_simulated_pk_point_write_is_not():
+    # QA P0: UPDATE ... WHERE non_unique_col = v is bulk-capable and MUST be
+    # simulated; UPDATE ... WHERE pk = v is one row and stays routine.
+    try:
+        pool = await asyncpg.create_pool(dsn=DB_DSN, min_size=1, max_size=4, timeout=5)
+    except (OSError, asyncpg.PostgresError) as exc:
+        pytest.skip(f"dev Postgres not reachable at {DB_DSN} ({exc})")
+    audit = AuditLog(__import__("tempfile").mktemp())
+    await audit.start()
+    async with pool.acquire() as c:
+        await c.execute("DROP TABLE IF EXISTS bulk_scratch")
+        await c.execute("CREATE TABLE bulk_scratch (id serial PRIMARY KEY, grp int)")
+        await c.execute(
+            "INSERT INTO bulk_scratch (grp) SELECT 1 FROM generate_series(1, 200)"
+        )
+        unique_columns = await load_unique_columns(c)
+    policy = Policy(
+        allowed_tables=frozenset({"bulk_scratch"}),
+        simulation=SimulationConfig(
+            enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+        ),
+    )
+    sess = ShadowSession(pool, audit, policy, None, unique_columns=unique_columns)
+    try:
+        # bulk: grp is NOT unique -> simulated -> 200 rows > confirm 10 -> held
+        bulk = await sess.run_query("UPDATE bulk_scratch SET grp = grp WHERE grp = 1")
+        assert bulk["requires_confirmation"] is True
+        assert bulk["simulation"]["exact_rows"] == 200
+        # point: id IS the PK -> not simulated -> executes
+        point = await sess.run_query("UPDATE bulk_scratch SET grp = 2 WHERE id = 1")
+        assert point["requires_confirmation"] is False
+        assert point["status"] == "UPDATE 1"
+        assert point["simulation"] is None
+    finally:
+        async with pool.acquire() as c:
+            await c.execute("DROP TABLE IF EXISTS bulk_scratch")
+        await audit.stop()
+        await pool.close()

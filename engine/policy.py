@@ -50,6 +50,7 @@ class ReasonCode:
     FUNCTION_NOT_ALLOWED = "FUNCTION_NOT_ALLOWED"
     BLAST_RADIUS_EXCEEDED = "BLAST_RADIUS_EXCEEDED"
     BLAST_RADIUS_UNKNOWN = "BLAST_RADIUS_UNKNOWN"
+    WRAPPED_WRITE = "WRAPPED_WRITE"
     UNPARSEABLE = "UNPARSEABLE"
 
 
@@ -368,6 +369,22 @@ def evaluate(sql: str, classification: Classification, policy: Policy) -> Decisi
 
     for stmt in classification.statements:
         idx = stmt.index
+
+        # A write wrapped inside a non-write top node (data-modifying CTE,
+        # EXPLAIN ANALYZE <write>, ...) can hide or even execute the write while
+        # looking like a read. Block it deterministically -- independent of
+        # simulation, which might be disabled (sec. 4 fail closed).
+        if stmt.nested_dml:
+            violations.append(
+                Violation(
+                    ReasonCode.WRAPPED_WRITE,
+                    f"A data-modifying statement is wrapped inside another "
+                    f"({stmt.stmt_type}); this can hide or unexpectedly execute "
+                    "the write and is not permitted.",
+                    "Issue the UPDATE/DELETE/INSERT as a top-level statement.",
+                    idx,
+                )
+            )
 
         if policy.read_only and stmt.kind in (WRITE, DDL):
             violations.append(

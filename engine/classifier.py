@@ -128,6 +128,7 @@ class StatementInfo:
     has_locking: bool  # SELECT ... FOR UPDATE/SHARE/NO KEY UPDATE (takes locks)
     functions: tuple[str, ...]  # bare lower-cased function names called
     point_write: bool  # UPDATE/DELETE whose WHERE is a single `col = value`
+    point_write_column: str | None  # "table.column" of that equality (uniqueness TBD)
 
 
 @dataclass(frozen=True)
@@ -162,6 +163,7 @@ class Classification:
                     "has_locking": s.has_locking,
                     "functions": list(s.functions),
                     "point_write": s.point_write,
+                    "point_write_column": s.point_write_column,
                 }
                 for s in self.statements
             ],
@@ -203,7 +205,8 @@ class _Walk(Visitor):
         # Per RangeVar: (schema, relname, shadowed_by_in_scope_cte, node_id).
         self.rangevars: list[tuple[str | None, str, bool, int]] = []
         self.target_ids: set[int] = set()  # id() of DML target RangeVars
-        self.columns: set[str] = set()
+        self.col_refs: list[list[str]] = []  # raw ColumnRef field lists (unresolved)
+        self.alias_map: dict[str, str] = {}  # lower(alias|table) -> base relname
         self.write_nodes: list[str] = []  # node type names of DML found anywhere
         self.unbounded_write = False
         self.has_locking = False  # FOR UPDATE / SHARE etc. anywhere in the tree
@@ -216,6 +219,11 @@ class _Walk(Visitor):
             ancestors, node.relname
         )
         self.rangevars.append((node.schemaname, node.relname, shadowed, id(node)))
+        # Map both the bare table name and any alias to the base relation, so a
+        # column qualifier (alias.col / alias.*) or whole-row ref resolves to it.
+        self.alias_map[node.relname.lower()] = node.relname
+        if node.alias is not None:
+            self.alias_map[node.alias.aliasname.lower()] = node.relname
 
     def visit_ColumnRef(self, _ancestors, node):
         parts = []
@@ -224,7 +232,7 @@ class _Walk(Visitor):
             parts.append(
                 "*" if type(f).__name__ == "A_Star" else getattr(f, "sval", "?")
             )
-        self.columns.add(".".join(parts))
+        self.col_refs.append(parts)
 
     def visit_LockingClause(self, _ancestors, _node):
         # SELECT ... FOR UPDATE/SHARE/NO KEY UPDATE/KEY SHARE -- takes row locks.
@@ -288,6 +296,34 @@ def _real_tables(walk: _Walk) -> tuple[str, ...]:
     return tuple(sorted(out))
 
 
+def _resolve_columns(walk: _Walk) -> tuple[str, ...]:
+    """Normalize column refs, resolving aliases and whole-row references.
+
+    ``s.col`` / ``s.*`` resolve through the alias map to ``staff.col`` / ``staff.*``,
+    and a bare reference to a table/alias (``SELECT s`` or ``row_to_json(s)``) is a
+    whole-row reference -> ``staff.*``. This is what stops a blocked column leaking
+    through an alias or a whole-row projection.
+    """
+    amap = walk.alias_map
+    out: set[str] = set()
+    for parts in walk.col_refs:
+        if parts == ["*"]:
+            out.add("*")  # unqualified star (policy checks it per referenced table)
+        elif len(parts) >= 2 and parts[-1] == "*":  # qualified star: alias.* / t.*
+            rel = amap.get(parts[-2].lower(), parts[-2])
+            out.add(f"{rel}.*")
+        elif len(parts) == 1:
+            name = parts[0]
+            if name.lower() in amap:  # bare table/alias -> whole-row reference
+                out.add(f"{amap[name.lower()]}.*")
+            else:
+                out.add(name)  # an ordinary unqualified column
+        else:  # qualified column: (schema.)?table.col
+            rel = amap.get(parts[-2].lower(), parts[-2])
+            out.add(f"{rel}.{parts[-1]}")
+    return tuple(sorted(out))
+
+
 def _touches_catalog(walk: _Walk) -> bool:
     for schema, relname, _shadowed, _node_id in walk.rangevars:
         if schema in _SYSTEM_SCHEMAS:
@@ -316,26 +352,28 @@ def _kind_for(stmt_type: str, walk: _Walk, sel_into: bool) -> str:
     return DDL
 
 
-def _is_point_predicate(where) -> bool:
-    """True if ``where`` is a single ``column = constant/param`` equality.
+def _point_predicate_column(where) -> str | None:
+    """The bare column of a single ``column = constant/param`` equality, else None.
 
-    A heuristic for "point" writes (update/delete one record by id). It can't see
-    schema, so equality on a *non-unique* column is a known false-negative for
-    riskiness -- handled conservatively by callers (we'd rather simulate than
-    miss). Anything compound (AND/OR), ranged (`<`), or set-based (`IN`) is not a
-    point predicate.
+    Identifies a "point" predicate (update/delete one record by ``col = value``).
+    The *column name* is returned so callers can check whether it is actually a
+    unique/PK column -- equality on a NON-unique column (e.g. ``customer_id``) is
+    NOT a point write and must still be simulated. Anything compound (AND/OR),
+    ranged (`<`), or set-based (`IN`) returns None.
     """
     if where is None or type(where).__name__ != "A_Expr":
-        return False
+        return None
     if where.kind != A_Expr_Kind.AEXPR_OP:
-        return False
+        return None
     names = [getattr(n, "sval", None) for n in (where.name or ())]
     if names != ["="]:
-        return False
-    return type(where.lexpr).__name__ == "ColumnRef" and type(where.rexpr).__name__ in {
-        "A_Const",
-        "ParamRef",
-    }
+        return None
+    if type(where.lexpr).__name__ != "ColumnRef":
+        return None
+    if type(where.rexpr).__name__ not in {"A_Const", "ParamRef"}:
+        return None
+    fields = where.lexpr.fields  # last field is the bare column name
+    return getattr(fields[-1], "sval", None) if fields else None
 
 
 def _classify_one(index: int, stmt_node) -> StatementInfo:
@@ -359,17 +397,22 @@ def _classify_one(index: int, stmt_node) -> StatementInfo:
     # A write nested under a non-write top node (e.g. data-modifying CTE).
     nested_dml = bool(walk.write_nodes) and stmt_type not in _WRITE_STMTS
 
-    # A scoped point write (UPDATE/DELETE ... WHERE col = value) is routine.
-    point_write = stmt_type in {"UpdateStmt", "DeleteStmt"} and _is_point_predicate(
-        getattr(stmt_node, "whereClause", None)
-    )
+    # A scoped UPDATE/DELETE ... WHERE col = value. Whether it's actually
+    # "routine" depends on col being unique -- callers check point_write_column
+    # against known unique columns (a non-unique col like customer_id is bulk).
+    point_write_column = None
+    if stmt_type in {"UpdateStmt", "DeleteStmt"}:
+        col = _point_predicate_column(getattr(stmt_node, "whereClause", None))
+        if col is not None:
+            point_write_column = f"{stmt_node.relation.relname}.{col}"
+    point_write = point_write_column is not None
 
     return StatementInfo(
         index=index,
         stmt_type=stmt_type,
         kind=kind,
         tables=_real_tables(walk),
-        columns=tuple(sorted(walk.columns)),
+        columns=_resolve_columns(walk),
         has_where=has_where,
         unbounded_write=walk.unbounded_write,
         nested_dml=nested_dml,
@@ -377,6 +420,7 @@ def _classify_one(index: int, stmt_node) -> StatementInfo:
         has_locking=walk.has_locking,
         functions=tuple(sorted(walk.functions)),
         point_write=point_write,
+        point_write_column=point_write_column,
     )
 
 

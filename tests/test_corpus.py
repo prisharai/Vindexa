@@ -47,3 +47,33 @@ def test_corpora_are_nonempty_and_disjoint():
     green_sql = {e["sql"] for e in GREEN}
     assert red_sql and green_sql
     assert red_sql.isdisjoint(green_sql)
+
+
+def test_corpus_metrics(capsys):
+    """Compute and report false-negative / false-positive rates (§8 Day 8).
+
+    False negatives (a red query allowed) are the worst failure mode and MUST be
+    zero. False positives (a green query blocked) erode trust and must stay low.
+    """
+    false_neg = [e for e in RED if decide(e["sql"], POLICY).allowed]
+    false_pos = [e for e in GREEN if not decide(e["sql"], POLICY).allowed]
+    fn_rate = len(false_neg) / len(RED)
+    fp_rate = len(false_pos) / len(GREEN)
+
+    report = (
+        "\n=== Corpus metrics (policies/default.yaml) ===\n"
+        f"  RED  (should block): {len(RED)} | false negatives (LEAKS): "
+        f"{len(false_neg)} -> FN rate {fn_rate:.1%}\n"
+        f"  GREEN (should allow): {len(GREEN)} | false positives: "
+        f"{len(false_pos)} -> FP rate {fp_rate:.1%}\n"
+    )
+    with capsys.disabled():
+        print(report)
+
+    # Hard gates: zero red leaks; low green over-blocking.
+    assert (
+        not false_neg
+    ), f"RED LEAKS (false negatives): {[e['sql'] for e in false_neg]}"
+    assert (
+        fp_rate <= 0.05
+    ), f"FP rate {fp_rate:.1%} too high: {[e['sql'] for e in false_pos]}"

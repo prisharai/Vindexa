@@ -36,7 +36,7 @@ from engine.audit import AuditLog
 from engine.classifier import DDL, WRITE, classify
 from engine.intent import check_intent, llm_second_opinion
 from engine.policy import Policy, apply_blast_radius, apply_intent, evaluate
-from engine.simulate import is_risky_write, simulate
+from engine.simulate import is_risky_write, load_unique_columns, simulate
 from engine.undo import UndoStore, execute_with_undo, revert
 
 # --- Config (env-overridable; defaults match docker-compose.yml) -------------
@@ -78,11 +78,16 @@ class ShadowSession:
         policy: Policy | None = None,
         undo_store: UndoStore | None = None,
         llm_assessor=None,
+        unique_columns: frozenset[str] = frozenset(),
     ) -> None:
         self._pool = pool
         self._audit = audit
         self._policy = policy
         self._undo_store = undo_store
+        # "table.column" set of single-column unique/PK columns (loaded at
+        # startup). A point write is only routine when scoped to one of these;
+        # otherwise it's simulated. Empty => every scoped write is simulated.
+        self._unique_columns = unique_columns
         # Optional async callable (prompt)->str for the advisory LLM second
         # opinion. None (default) => the LLM check never runs.
         self._llm_assessor = llm_assessor
@@ -101,7 +106,7 @@ class ShadowSession:
         cfg = self._policy.intent if self._policy else None
         if not (cfg and cfg.llm_enabled and self._llm_assessor and stated_task):
             return
-        if not is_risky_write(classification):
+        if not is_risky_write(classification, self._unique_columns):
             return
         if flag is None:
             flag = check_intent(
@@ -192,11 +197,15 @@ class ShadowSession:
             and decision.allowed
             and enforce
             and self._policy.simulation.enabled
-            and is_risky_write(classification)
+            and is_risky_write(classification, self._unique_columns)
         ):
             async with self._pool.acquire() as sim_conn:
                 sim = await simulate(
-                    sim_conn, sql, classification, self._policy.simulation
+                    sim_conn,
+                    sql,
+                    classification,
+                    self._policy.simulation,
+                    self._unique_columns,
                 )
             decision = apply_blast_radius(decision, sim, self._policy.simulation)
 
@@ -411,9 +420,16 @@ async def lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     audit = AuditLog(AUDIT_LOG_PATH)
     await audit.start()
     undo_store = UndoStore(policy.undo) if policy.undo.enabled else None
+    # Load the unique/PK column metadata once, off the hot path (sec. 4): it lets
+    # a point write by a unique key skip simulation while a bulk write on a
+    # non-unique column is still simulated.
+    async with pool.acquire() as conn:
+        unique_columns = await load_unique_columns(conn)
     try:
         yield AppContext(
-            session=ShadowSession(pool, audit, policy, undo_store),
+            session=ShadowSession(
+                pool, audit, policy, undo_store, unique_columns=unique_columns
+            ),
             audit=audit,
             pool=pool,
             policy=policy,

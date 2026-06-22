@@ -28,6 +28,14 @@ from pglast.parser import ParseError
 # repeats (very common with agents looping/retrying) become ~free.
 _PARSE_CACHE_SIZE = 2048
 
+# Hard ceiling on input size, checked BEFORE any parse work (sec. 4). libpg_query
+# is super-linear on huge value lists (a 40 KB IN-list takes ~400 ms), which would
+# blow the p99 budget. Real agent SQL is well under this; anything larger is
+# pathological and fails closed instantly with an O(1) length check -- the block
+# is sub-millisecond. (Not a per-query <5 ms guarantee for everything under the
+# cap; it's a fail-safe against unbounded blowup. Common traffic is unaffected.)
+_MAX_SQL_BYTES = 8000
+
 
 @dataclass(frozen=True)
 class ParseResult:
@@ -55,6 +63,13 @@ def parse(sql: str) -> ParseResult:
     return an empty statement tuple rather than raising, so the request path
     stays branch-free of exceptions.
     """
+    if len(sql) > _MAX_SQL_BYTES:
+        # Fail closed BEFORE parsing -- the cheap O(1) guard that protects the
+        # latency budget from pathological inputs (sec. 4).
+        return ParseResult(
+            statements=(),
+            error=f"input too large ({len(sql)} bytes > {_MAX_SQL_BYTES} limit)",
+        )
     try:
         raw = parse_sql(sql)
     except ParseError as exc:

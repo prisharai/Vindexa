@@ -37,3 +37,25 @@
 
 - sql: "SELECT customer_id, SUM(amount) FROM payment GROUP BY customer_id HAVING SUM(amount) > 100"
   why: "grouped/having aggregate read"
+
+# --- Legit queries that exercise the same surfaces as the evasions but are
+# --- actually safe. These guard against FALSE POSITIVES (over-blocking erodes
+# --- trust, CLAUDE.md sec. 11) -- comments/casing/quoting must not trip us up.
+
+- sql: "/* daily report */ SELECT title, rental_rate FROM film WHERE film_id = 5"
+  why: "comments are fine on a legit scoped read"
+
+- sql: "SeLeCt film_id FROM film WHERE film_id = 1"
+  why: "mixed casing on a legit read is allowed"
+
+- sql: "SELECT f.title, c.name FROM film f JOIN film_category fc ON f.film_id = fc.film_id JOIN category c ON fc.category_id = c.category_id WHERE f.film_id = 10"
+  why: "multi-join across allowed tables"
+
+- sql: "UPDATE customer SET activebool = true WHERE customer_id = 7"
+  why: "scoped UPDATE with WHERE on an allowed table"
+
+- sql: "SELECT now(), count(*) FROM rental WHERE customer_id = 3"
+  why: "now()/count() are not on the unsafe-function denylist"
+
+- sql: "SELECT * FROM \"film\" WHERE film_id = 2"
+  why: "quoted identifier for an allowed table is still allowed"

@@ -86,14 +86,37 @@ _SKIPPED = SimulationResult(method="skipped")
 # point writes (UPDATE/DELETE ... WHERE col = value) are routine -> not simulated.
 _RISKY_WRITE_STMTS = {"UpdateStmt", "DeleteStmt", "MergeStmt"}
 
+# Single-column unique / primary-key columns of every table, e.g. "film.film_id".
+# A point write is only "routine" when scoped to one of these.
+_UNIQUE_COLS_SQL = """
+SELECT c.relname || '.' || a.attname
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+WHERE i.indisunique
+  AND array_length(i.indkey, 1) = 1
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+"""
 
-def is_risky_write(classification: Classification) -> bool:
+
+async def load_unique_columns(conn) -> frozenset[str]:
+    """Load ``table.column`` for every single-column unique/PK index (startup only)."""
+    return frozenset(r[0] for r in await conn.fetch(_UNIQUE_COLS_SQL))
+
+
+def is_risky_write(
+    classification: Classification, unique_columns: frozenset[str] = frozenset()
+) -> bool:
     """Gate: only a *risky-shaped* single write is simulated (sec. 4).
 
-    Risky = a single-statement UPDATE/DELETE/MERGE that is not a point write, or
-    a data-modifying CTE (routed here so it fails closed -- see ``simulate``).
-    Routine writes (point updates/deletes by key, plain INSERTs) are skipped, so
-    they pay no extra round trips, locks, or rollback side effects.
+    Risky = a single-statement UPDATE/DELETE/MERGE that is NOT scoped to a unique
+    column, or a data-modifying CTE (routed here so it fails closed). A point write
+    counts as routine (skip simulation) only when its predicate column is a known
+    single-column unique/PK -- ``WHERE film_id = 1`` is one row, but
+    ``WHERE customer_id = 1`` on a non-unique column can be thousands and MUST be
+    simulated. With no ``unique_columns`` metadata, every scoped write is simulated
+    (the safe default).
     """
     if classification.statement_count != 1 or not classification.statements:
         return False
@@ -103,7 +126,8 @@ def is_risky_write(classification: Classification) -> bool:
     if s.nested_dml:
         return True  # data-modifying CTE: simulate so it fails closed (P0)
     if s.stmt_type in _RISKY_WRITE_STMTS:
-        return not s.point_write
+        # Routine only if scoped to a known-unique column; otherwise risky.
+        return not (s.point_write and s.point_write_column in unique_columns)
     return False
 
 
@@ -172,7 +196,11 @@ async def _exact(
 
 
 async def simulate(
-    conn, sql: str, classification: Classification, config: SimulationConfig
+    conn,
+    sql: str,
+    classification: Classification,
+    config: SimulationConfig,
+    unique_columns: frozenset[str] = frozenset(),
 ) -> SimulationResult:
     """Measure a statement's blast radius. Only ever runs on a risky write.
 
@@ -180,7 +208,7 @@ async def simulate(
     write, or when simulation is disabled -- so callers can invoke it
     unconditionally and it self-gates.
     """
-    if not config.enabled or not is_risky_write(classification):
+    if not config.enabled or not is_risky_write(classification, unique_columns):
         return _SKIPPED
 
     # Data-modifying CTE (P0): the outer command tag (e.g. "SELECT 1") does NOT
