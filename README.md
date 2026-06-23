@@ -1,4 +1,4 @@
-# Agent DB Safety
+# Vindexa
 
 **Developer preview.** A runtime safety layer that sits between AI agents and a
 database (Postgres first), making risky agent-issued writes safe *before* they
