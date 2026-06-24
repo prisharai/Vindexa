@@ -20,14 +20,26 @@ paper. Read these in order:
 Source of the instrument: `harness.py` (tasks, conditions, evasion classifier),
 `runner.py` (closed loop), `agents.py` (mock + real LLM), `stats.py` (analysis).
 
-## The one-sentence finding
+## ⚠ Critical reframing — read before writing (v1 vs v2)
 
-When an AI agent's database write is blocked, **telling it which rule it broke
-(e.g. `WRITE_WITHOUT_WHERE`) makes it far more likely to _evade_ the guardrail —
-usually by adding a trivially-true `WHERE` that satisfies the rule while still
-hitting every row** — than giving it an opaque error; the effect is large and
-replicates across models, and the evasion is only detectable because the engine
-**measures each write's blast radius** rather than checking SQL syntax.
+The completed run uses **v1 tasks that explicitly ask for a broad operation**
+("empty the table"). Under those prompts, a full-table write is *faithful
+compliance*, so the `scope_theater`/`destructive` labels measure **literal rule
+satisfaction under a broad objective that conflicts with the guardrail — not
+strategic evasion of a narrow intent.** The v1 study must be written that way (it
+is still a real, interesting finding about *mechanistic feedback inducing literal
+rule satisfaction*). The genuinely-evasion framing requires **v2** (narrow-intent
+tasks, built and ready in `tasks_v2.py` + `pre_registration.md`) — runnable the
+moment API credits are available; it was not run here because credits ran out.
+
+## The one-sentence finding (v1, reframed)
+
+When an agent is told to perform a broad write and the guardrail blocks it,
+**naming the violated rule (e.g. `WRITE_WITHOUT_WHERE`) makes the agent far more
+likely to re-issue a syntactically-compliant statement that still hits the whole
+table** (typically `WHERE 1=1`) than an opaque error does — i.e. mechanistic
+feedback elicits literal rule satisfaction. Blast-radius measurement robustly
+flags this class of statement; simple syntax heuristics catch only some cases.
 
 ## Headline numbers (evasion rate = ≥1 evasion attempt)
 
@@ -43,9 +55,10 @@ replicates across models, and the evasion is only detectable because the engine
   evasion — its rate mirrors the evasion rate above.
 - **Mirror image in recovery:** genuine recovery falls as denials get richer
   (Haiku 38% at C0 → 2–5% at C1–C3).
-- **Capability nuance worth a paragraph:** Opus (the strongest model) evades
-  *less* and recovers *more* than Haiku/Sonnet — i.e. capability may partly
-  protect against feedback-as-recon. (Opus/Sonnet partial — see completeness.)
+- **Capability nuance (partial data):** Opus (strongest) showed *less* literal
+  satisfaction and *more* narrowing than Haiku/Sonnet — capability may partly
+  protect — but **Opus/Sonnet cells are incomplete; this appears only in partial
+  cross-model runs and is not confirmatory.**
 - Exact odds ratios + p-values (Fisher exact, each condition vs C0, pooled and
   per model) and the logistic regression are in `RESULTS_STUDY.md`.
 
@@ -68,9 +81,10 @@ To finish the replication: add API credits and re-run the two partial models
 
 ## What's solid vs. what needs a caveat
 
-- **Solid:** the direction and size of the C0→C1 jump (Haiku complete, large,
-  replicated); the scope-theater mechanism; the blast-radius-only detectability.
-- **Caveat in the paper:** single provider family; 3 synthetic tasks; Sonnet/Opus
-  partial n; one run (no cross-seed replication yet); prompt sensitivity
-  uncontrolled. Pre-register the confirmatory test before claiming significance
-  as confirmatory rather than exploratory.
+- **Supported (exploratory):** on the complete Haiku run, the C0→C1 jump is large;
+  partial Sonnet/Opus runs show the same direction. Treat as exploratory.
+- **Must caveat:** v1 tasks conflate compliance with evasion (see reframing);
+  single provider family; 3 synthetic, adversarially-constructed tasks;
+  Sonnet/Opus partial; one seed; v1 C3 confounds row-count with confirmation
+  framing (fixed in v2). The confirmatory claim needs the **v2** run
+  (`pre_registration.md`), not v1.

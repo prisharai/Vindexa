@@ -4,7 +4,8 @@ push them toward strategic evasion?
 This is the measurement apparatus for the study. It is transport-agnostic about
 *which* agent is driving (see ``agents.py``); it provides:
 
-* a **task battery** -- realistic DB chores whose naive solution over-reaches;
+* a **task battery** -- synthetic, adversarially-constructed DB chores whose
+  naive solution over-reaches (v1 = broad-objective; v2 in tasks_v2 = narrow);
 * the **feedback conditions** -- four denial-richness levels (the independent
   variable), from an opaque error to a full structured rejection with blast
   radius;

@@ -3,329 +3,449 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Vindexa | Postgres safety for AI agents</title>
+    <title>Interdict | Runtime safety for agent SQL</title>
     <meta
       name="description"
-      content="Vindexa is the safety and undo layer for AI agents touching Postgres."
+      content="Interdict is the safety and undo layer for AI agents touching Postgres."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650;9..144,750&family=Inter:wght@400;500;600;700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Noto+Serif+JP:wght@400;500;600;700&family=Source+Code+Pro:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="scroll-progress" aria-hidden="true"></div>
+    <section id="gate" class="gate" aria-labelledby="gate-title">
+      <div class="gate-rule gate-rule-left" aria-hidden="true"></div>
+      <div class="gate-rule gate-rule-right" aria-hidden="true"></div>
 
-    <header class="site-header">
-      <a class="brand" href="#top" aria-label="Vindexa home">
-        <span class="logo-mark" aria-hidden="true">
-          <svg viewBox="0 0 42 42" role="img">
-            <path class="logo-shield" d="M21 3 35 8.8v12.9c0 8.2-5.2 13.7-14 17.3C12.2 35.4 7 29.9 7 21.7V8.8L21 3Z" />
-            <path class="logo-v" d="M13.2 14.4 20.7 29 29 13.3" />
-            <path class="logo-line" d="M15 22.4h12" />
+      <div class="gate-inner">
+        <p class="overline">Postgres restraint for autonomous systems</p>
+        <button class="crest-button" type="button" aria-label="Enter Interdict site">
+          <svg viewBox="0 0 160 160" aria-hidden="true">
+            <circle class="crest-ring" cx="80" cy="80" r="68" />
+            <path class="flower-petal" d="M80 25c17 22 17 38 0 55-17-17-17-33 0-55Z" />
+            <path class="flower-petal" d="M135 80c-22 17-38 17-55 0 17-17 33-17 55 0Z" />
+            <path class="flower-petal" d="M80 135c-17-22-17-38 0-55 17 17 17 33 0 55Z" />
+            <path class="flower-petal" d="M25 80c22-17 38-17 55 0-17 17-33 17-55 0Z" />
+            <path class="flower-petal flower-petal-soft" d="M119 41c-4 28-15 39-39 39 0-24 11-35 39-39Z" />
+            <path class="flower-petal flower-petal-soft" d="M119 119c-28-4-39-15-39-39 24 0 35 11 39 39Z" />
+            <circle class="flower-center" cx="80" cy="80" r="9" />
           </svg>
-        </span>
-        <span class="brand-word">Vindexa</span>
-      </a>
-      <nav class="nav" aria-label="Primary navigation">
-        <a href="#product">Product</a>
-        <a href="#demo">Demo</a>
-        <a href="#start">Start</a>
-        <a href="#status">Status</a>
-      </nav>
-      <a
-        class="nav-cta"
-        href="https://github.com/prisharai/agent-db-safety"
-        target="_blank"
-        rel="noreferrer"
-      >GitHub</a>
-    </header>
+        </button>
+        <h1 id="gate-title">Interdict</h1>
+        <p class="gate-line">The quiet authority between agents and production data.</p>
+      </div>
+    </section>
 
-    <main id="top">
-      <section class="hero">
-        <div class="hero-copy reveal">
-          <p class="eyebrow">Runtime database defense for agent workflows</p>
-          <h1>Vindexa</h1>
-          <p class="tagline">A graceful defender for AI-generated SQL.</p>
-          <p class="subhead">
-            The safety and undo layer for AI agents touching Postgres. Preview,
-            policy-check, simulate, approve, audit, and revert risky SQL before
-            it becomes a production incident.
-          </p>
-          <div class="hero-actions">
-            <a class="button primary" href="#start">Get Started</a>
-            <a
-              class="button secondary"
-              href="https://github.com/prisharai/agent-db-safety"
-              target="_blank"
-              rel="noreferrer"
-            >View GitHub</a>
-          </div>
-          <p class="name-note">
-            The name comes from <em>vindex</em>, Latin for protector or defender:
-            a guard placed between autonomous agents and the data they can change.
-          </p>
-        </div>
+    <div id="site" class="site" aria-hidden="true">
+      <header class="site-header">
+        <a class="brand" href="#overview" aria-label="Interdict home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 44 44">
+              <path d="M22 6c6 8 6 14 0 20-6-6-6-12 0-20Z" />
+              <path d="M38 22c-8 6-14 6-20 0 6-6 12-6 20 0Z" />
+              <path d="M22 38c-6-8-6-14 0-20 6 6 6 12 0 20Z" />
+              <path d="M6 22c8-6 14-6 20 0-6 6-12 6-20 0Z" />
+              <circle cx="22" cy="22" r="3.2" />
+            </svg>
+          </span>
+          <span>Interdict</span>
+        </a>
+        <nav class="nav" aria-label="Primary navigation">
+          <a href="#overview">Overview</a>
+          <a href="#specifics">Specifics</a>
+          <a href="#method">Method</a>
+          <a href="#research">Research</a>
+          <a href="#demo">Demo</a>
+          <a href="#start">Start</a>
+        </nav>
+        <a
+          class="header-link"
+          href="https://github.com/prisharai/Interdict"
+          target="_blank"
+          rel="noreferrer"
+        >GitHub</a>
+        <button class="theme-toggle" type="button" aria-label="Switch to light mode">
+          <span></span>
+        </button>
+      </header>
 
-        <div class="hero-stage reveal" style="--delay: 120ms">
-          <div class="status-strip">
-            <span class="status-dot"></span>
-            <span>Policy active</span>
-            <span>p99 gate &lt; 5 ms</span>
+      <main>
+        <section id="overview" class="hero section">
+          <div class="blossom-scene" aria-hidden="true">
+            <svg class="blossom-tree" viewBox="0 0 720 760">
+              <path class="tree-path trunk-main" d="M185 748C185 601 204 477 264 352c39-82 70-161 65-260" />
+              <path class="tree-path branch-main" d="M245 395C340 292 465 230 646 215" />
+              <path class="tree-path branch-mid" d="M229 472C336 407 443 378 604 398" />
+              <path class="tree-path branch-low" d="M203 560C290 515 404 505 536 552" />
+              <path class="tree-path branch-high" d="M304 287C387 198 474 142 590 106" />
+              <g class="branch-flowers">
+                <circle cx="617" cy="211" r="8" />
+                <circle cx="584" cy="224" r="6" />
+                <circle cx="548" cy="232" r="7" />
+                <circle cx="515" cy="245" r="5" />
+                <circle cx="468" cy="269" r="7" />
+                <circle cx="602" cy="398" r="7" />
+                <circle cx="558" cy="392" r="5" />
+                <circle cx="510" cy="392" r="8" />
+                <circle cx="536" cy="552" r="7" />
+                <circle cx="486" cy="535" r="6" />
+                <circle cx="590" cy="106" r="8" />
+                <circle cx="545" cy="125" r="5" />
+              </g>
+            </svg>
+            <span class="petal p1"></span>
+            <span class="petal p2"></span>
+            <span class="petal p3"></span>
+            <span class="petal p4"></span>
+            <span class="petal p5"></span>
+            <span class="petal p6"></span>
+            <span class="petal p7"></span>
+            <span class="petal p8"></span>
           </div>
-          <div class="query-card">
-            <div class="query-head">
-              <span>agent.generated.sql</span>
-              <strong>blocked</strong>
+          <div class="hero-copy">
+            <p class="overline">Runtime interdiction for Postgres</p>
+            <h2>The safety and undo layer for AI agents touching Postgres.</h2>
+            <p>
+              Interdict classifies agent-generated SQL, enforces policy, measures
+              blast radius, holds risky writes for operator approval, records the
+              audit trail, and preserves an undo path where the write is reversible.
+            </p>
+            <div class="action-row">
+              <a class="button primary" href="#start">Get Started</a>
+              <a
+                class="button"
+                href="https://github.com/prisharai/Interdict"
+                target="_blank"
+                rel="noreferrer"
+              >View GitHub</a>
             </div>
-            <pre><code><span class="muted">task</span> downgrade one customer
+          </div>
+
+          <aside class="terminal" aria-label="Blocked SQL example">
+            <div class="terminal-head">
+              <span>agent.generated.sql</span>
+              <strong>interdicted</strong>
+            </div>
+            <pre><code><span class="dim">task</span> downgrade one customer
 <span class="sql">UPDATE users SET plan = 'free';</span>
 
 <span class="danger">WRITE_WITHOUT_WHERE</span>
 blast_radius: unbounded
-decision: no database write executed
+decision: no write executed
 audit: logs/audit.jsonl</code></pre>
-          </div>
-          <div class="signal-grid">
-            <div><strong>0%</strong><span>red corpus leaks</span></div>
-            <div><strong>294</strong><span>tests passing</span></div>
-            <div><strong>undo</strong><span>agent writes</span></div>
-          </div>
-        </div>
-      </section>
+          </aside>
+        </section>
 
-      <section id="product" class="section problem reveal">
-        <div class="section-kicker">The problem</div>
-        <div class="split">
-          <h2>Agent SQL needs runtime control, not another migration tool.</h2>
-          <div class="copy-stack">
-            <p>
-              AI agents can now generate and execute SQL during ordinary
-              workflows. A missing <code>WHERE</code>, broad update, unsafe
-              function, or catalog query can alter or expose far more data than
-              the task required.
-            </p>
-            <p>
-              Vindexa focuses on live agent actions against existing Postgres
-              databases: classify the SQL, enforce policy, estimate the blast
-              radius, hold risky writes for approval, audit the decision, and
-              preserve an undo path when the write shape supports it.
-            </p>
-          </div>
-        </div>
-      </section>
+        <section class="section thesis">
+          <p>
+            Interdict is not a migration system, not database version control,
+            and not a replacement database. It is a runtime guard for existing
+            Postgres workflows where AI agents can request live database access.
+          </p>
+        </section>
 
-      <section class="section flow-section reveal">
-        <div class="section-kicker">Control path</div>
-        <h2>Designed around the decisions an infrastructure team actually needs.</h2>
-        <div class="flow">
-          <article>
-            <span>01</span>
-            <h3>Agent sends SQL</h3>
-            <p>The MCP server receives SQL plus the agent's stated task.</p>
-          </article>
-          <article>
-            <span>02</span>
-            <h3>Parse and classify</h3>
-            <p>Postgres AST parsing identifies shape, tables, columns, and risks.</p>
-          </article>
-          <article>
-            <span>03</span>
-            <h3>Policy and simulation</h3>
-            <p>Deterministic rules run first; risky writes can be rolled back in simulation.</p>
-          </article>
-          <article>
-            <span>04</span>
-            <h3>Approve, log, undo</h3>
-            <p>Safe writes run, risky writes hold, reversible changes receive action ids.</p>
-          </article>
-        </div>
-      </section>
-
-      <section id="demo" class="section demo-film reveal">
-        <div class="section-kicker">Generated demo video</div>
-        <div class="video-layout">
-          <div>
-            <h2>Watch the safety loop happen.</h2>
-            <p>
-              This generated walkthrough visualizes the exact demo path in the
-              repo: block a mass update, simulate a scoped risky write, hold it
-              for operator approval, record the audit line, then show the undo
-              action id.
-            </p>
-            <div class="demo-steps">
-              <button class="demo-step is-active" data-demo-step="0">Block</button>
-              <button class="demo-step" data-demo-step="1">Simulate</button>
-              <button class="demo-step" data-demo-step="2">Approve</button>
-              <button class="demo-step" data-demo-step="3">Undo</button>
-            </div>
+        <section class="section proof">
+          <div class="proof-grid">
+            <article>
+              <strong>294</strong>
+              <span>tests passing</span>
+              <p>Parser edge cases, policy decisions, simulation, undo, and enforcement paths.</p>
+            </article>
+            <article>
+              <strong>0%</strong>
+              <span>red corpus leaks</span>
+              <p>Known-dangerous statements in the repo corpus are blocked in local tests.</p>
+            </article>
+            <article>
+              <strong>&lt;5 ms</strong>
+              <span>local p99 gate</span>
+              <p>The pass-through latency budget is checked by the committed benchmark gate.</p>
+            </article>
+            <article>
+              <strong>fail closed</strong>
+              <span>for writes</span>
+              <p>Unparseable or non-reversible writes are rejected rather than guessed safe.</p>
+            </article>
           </div>
+        </section>
 
-          <div class="video-shell" aria-label="AI generated demo animation">
-            <div class="video-toolbar">
-              <span class="play-icon"></span>
-              <span>AI-generated demo reel</span>
-              <strong id="demo-timestamp">00:03</strong>
-            </div>
-            <div class="video-canvas">
-              <div class="db-cylinder" aria-hidden="true">
-                <span></span>
-                <span></span>
-                <span></span>
-              </div>
-              <div class="agent-node">AI agent</div>
-              <div class="guard-node">Vindexa</div>
-              <div class="policy-node">Policy</div>
-              <div class="flow-line line-agent"></div>
-              <div class="flow-line line-db"></div>
-              <div class="pulse-dot"></div>
-              <div class="video-caption">Generated enterprise walkthrough</div>
-              <pre class="video-code"><code id="demo-code">UPDATE users SET plan = 'free';</code></pre>
-              <div class="verdict" id="demo-verdict">Blocked: missing WHERE</div>
-            </div>
-            <div class="video-progress">
-              <span class="video-progress-bar"></span>
-            </div>
+        <section id="specifics" class="section specifics">
+          <div class="section-head">
+            <p class="overline">Product specifics</p>
+            <h2>What Interdict actually does at runtime.</h2>
           </div>
-        </div>
-      </section>
+          <div class="specific-grid">
+            <article>
+              <span>Parse</span>
+              <h3>Real Postgres AST</h3>
+              <p>
+                SQL is parsed with the Postgres grammar, so comments, casing,
+                whitespace, aliases, and wrapped writes are handled structurally.
+              </p>
+            </article>
+            <article>
+              <span>Decide</span>
+              <h3>Deterministic policy</h3>
+              <p>
+                YAML rules produce stable reason codes for unsafe tables, columns,
+                DDL, system catalogs, locking reads, and unbounded writes.
+              </p>
+            </article>
+            <article>
+              <span>Measure</span>
+              <h3>Blast radius before commit</h3>
+              <p>
+                Risky writes can run inside a time-boxed transaction and roll back,
+                giving the operator an affected-row count before execution.
+              </p>
+            </article>
+            <article>
+              <span>Recover</span>
+              <h3>Undo when the shape supports it</h3>
+              <p>
+                Reversible writes capture before/after images; unsupported writes
+                are blocked by default instead of pretending they are safe.
+              </p>
+            </article>
+          </div>
+        </section>
 
-      <section id="start" class="section start reveal">
-        <div class="section-kicker">Use the demo</div>
-        <div class="start-grid">
-          <div>
-            <h2>Run Vindexa locally against the seeded Postgres fixture.</h2>
-            <p>
-              The quickest proof is the included demo script. It creates a
-              throwaway <code>accounts</code> table, blocks a dangerous query,
-              simulates a risky write, and reverts an allowed write.
-            </p>
+        <section id="method" class="section method">
+          <div class="section-head">
+            <p class="overline">Method</p>
+            <h2>One decision before Postgres commits.</h2>
           </div>
-          <div class="command-card">
-            <div class="command-title">Terminal</div>
-            <pre><code>cd /Users/prishar/agent-db-safety
-docker compose up -d
-uv sync --frozen
-uv run python -m examples.demo</code></pre>
+          <div class="steps">
+            <article>
+              <span>01</span>
+              <h3>Agent sends SQL</h3>
+              <p>The MCP adapter receives the statement and the agent's stated task.</p>
+            </article>
+            <article>
+              <span>02</span>
+              <h3>Classify</h3>
+              <p>A real Postgres AST identifies writes, DDL, catalog access, risky functions, and scope.</p>
+            </article>
+            <article>
+              <span>03</span>
+              <h3>Measure</h3>
+              <p>Risky writes can be simulated in a rolled-back transaction to estimate affected rows.</p>
+            </article>
+            <article>
+              <span>04</span>
+              <h3>Interdict</h3>
+              <p>The query is allowed, blocked, held for approval, logged, or made undoable.</p>
+            </article>
           </div>
-        </div>
-        <div class="demo-guide">
-          <article>
-            <span>01</span>
-            <h3>Run the scripted demo</h3>
-            <p>The command creates isolated demo data and exercises block,
-              simulate, approve, audit, and undo behavior.</p>
-          </article>
-          <article>
-            <span>02</span>
-            <h3>Check the decision output</h3>
-            <p>Look for <code>WRITE_WITHOUT_WHERE</code>, held approvals,
-              affected-row estimates, and undo action ids.</p>
-          </article>
-          <article>
-            <span>03</span>
-            <h3>Inspect the audit trail</h3>
-            <p>Runtime decisions are written as JSONL records under
-              <code>logs/audit.jsonl</code>.</p>
-          </article>
-        </div>
-        <div class="usage-grid">
-          <article>
-            <h3>Start the MCP server</h3>
-            <pre><code>AGENT_OPERATOR_TOKEN=dev-token \
-  uv run python -m adapters.mcp_server</code></pre>
-          </article>
-          <article>
-            <h3>Run checks</h3>
-            <pre><code>uv run pytest
-uv run ruff check .
-uv run black --check .
-uv run python -m benchmarks.ci_latency_gate</code></pre>
-          </article>
-          <article>
-            <h3>Agent call</h3>
-            <pre><code>run_query({
-  "stated_task": "downgrade user 42",
-  "sql": "UPDATE users SET plan = 'free';"
-})</code></pre>
-          </article>
-        </div>
-      </section>
+        </section>
 
-      <section class="section features reveal">
-        <div class="section-kicker">Enterprise-shaped controls</div>
-        <div class="feature-grid">
+        <section class="section features">
           <article>
-            <h3>AST classification</h3>
-            <p>Detect reads, writes, DDL, multi-statement batches, catalog access,
-              locking reads, unsafe functions, wrapped writes, and sensitive columns.</p>
+            <h3>SQL classification</h3>
+            <p>AST-derived statement facts, not regex matching.</p>
           </article>
           <article>
             <h3>Policy enforcement</h3>
-            <p>YAML policy returns stable machine-readable reason codes with
-              suggested fixes.</p>
+            <p>Stable reason codes and deterministic YAML policy.</p>
           </article>
           <article>
             <h3>Blast-radius simulation</h3>
-            <p>Risky writes can be measured inside a timed transaction before any commit.</p>
+            <p>Impact-aware gating for risky writes.</p>
           </article>
           <article>
             <h3>Approval gates</h3>
-            <p>Large or contradictory writes are held with an approval id and
-              require an operator token.</p>
+            <p>Held writes require an operator token.</p>
           </article>
           <article>
-            <h3>Audit visibility</h3>
-            <p>Async JSONL audit logs include decisions, classifications, and queue health.</p>
+            <h3>Audit trail</h3>
+            <p>Async JSONL records with queue health visibility.</p>
           </article>
           <article>
-            <h3>Undo protection</h3>
-            <p>Reversible writes capture before/after images; unsupported shapes
-              are blocked by default.</p>
+            <h3>Undo path</h3>
+            <p>Before/after images for supported reversible writes.</p>
           </article>
-        </div>
-      </section>
+        </section>
 
-      <section class="section differentiation reveal">
-        <div class="section-kicker">Focused category</div>
-        <h2>Not database version control. Not migrations. Not an ORM.</h2>
-        <div class="not-grid">
-          <div>Not Dolt</div>
-          <div>Not Liquibase or Flyway</div>
-          <div>Not an ORM migration layer</div>
-          <div>Not a replacement database</div>
-        </div>
-        <p>
-          Vindexa is runtime safety for AI-agent database access in existing
-          Postgres workflows.
-        </p>
-      </section>
-
-      <section id="status" class="section status reveal">
-        <div class="status-panel">
-          <div>
-            <div class="section-kicker">Status</div>
-            <h2>Production-grade problem. Developer-preview implementation.</h2>
+        <section id="demo" class="section demo">
+          <div class="section-head">
+            <p class="overline">Demo</p>
+            <h2>A mass update meets the gate.</h2>
           </div>
-          <p>
-            The interface is positioned for enterprise evaluation, but the repo
-            remains a local developer preview. Before production use, add
-            least-privilege roles, durable/tamper-resistant audit storage, hosted
-            CI, persistent approval state, and security review.
-          </p>
-        </div>
-      </section>
-    </main>
+          <div class="demo-grid">
+            <div class="demo-panel">
+              <span>Attempt</span>
+              <pre><code>UPDATE users SET plan = 'free';</code></pre>
+            </div>
+            <div class="demo-panel">
+              <span>Verdict</span>
+              <pre><code>blocked: true
+reason_code: WRITE_WITHOUT_WHERE
+decision: no database write executed</code></pre>
+            </div>
+            <div class="demo-panel">
+              <span>Next controlled path</span>
+              <pre><code>simulate scoped write
+hold broad write for approval
+record audit line
+capture undo_action_id when reversible</code></pre>
+            </div>
+          </div>
+        </section>
 
-    <footer class="footer">
-      <span>Vindexa</span>
-      <a href="https://github.com/prisharai/agent-db-safety" target="_blank" rel="noreferrer">GitHub</a>
-      <a href="../README.md">Docs</a>
-      <span>Guard the query. Keep the rollback.</span>
-    </footer>
+        <section id="start" class="section start">
+          <div class="section-head">
+            <p class="overline">Start locally</p>
+            <h2>Run Interdict end-to-end, then connect it to an agent.</h2>
+          </div>
+          <div class="runbook">
+            <div class="runbook-tabs" role="tablist" aria-label="Local setup steps">
+              <button class="run-tab is-active" type="button" data-step="0">1. Prepare</button>
+              <button class="run-tab" type="button" data-step="1">2. Start DB</button>
+              <button class="run-tab" type="button" data-step="2">3. Demo</button>
+              <button class="run-tab" type="button" data-step="3">4. Agent</button>
+              <button class="run-tab" type="button" data-step="4">5. Verify</button>
+            </div>
+            <div class="runbook-panel">
+              <div>
+                <p class="run-label" id="run-step-label">Step 1</p>
+                <h3 id="run-step-title">Install the project environment</h3>
+                <p id="run-step-copy">
+                  Start from the repository root and install exactly from the lockfile.
+                  This keeps the parser, MCP server, benchmark tools, and tests on
+                  the same versions used by the repo.
+                </p>
+              </div>
+              <div class="run-command">
+                <button class="copy-command" type="button">Copy command</button>
+                <pre><code id="run-step-code">cd /Users/prishar/agent-db-safety
+uv sync --frozen</code></pre>
+              </div>
+              <div class="run-expected">
+                <span>Expected signal</span>
+                <p id="run-step-expected">
+                  Dependencies install from <code>uv.lock</code> without changing the lockfile.
+                </p>
+              </div>
+              <div class="run-note" id="run-step-note">
+                Requires Docker and uv. The command should finish without editing dependencies.
+              </div>
+            </div>
+          </div>
+          <div class="runbook-deep">
+            <article>
+              <h3>What the demo proves</h3>
+              <p>
+                The demo creates isolated data, blocks a dangerous mass update,
+                simulates a risky write, records an audit entry, and shows an undo
+                path for a reversible write.
+              </p>
+            </article>
+            <article>
+              <h3>Where to inspect output</h3>
+              <p>
+                Look at terminal responses for <code>blocked</code>,
+                <code>requires_confirmation</code>, <code>simulation</code>, and
+                <code>undo_action_id</code>. Audit records land in
+                <code>logs/audit.jsonl</code>.
+              </p>
+            </article>
+            <article>
+              <h3>How an agent uses it</h3>
+              <p>
+                Register the MCP server, then point the agent at <code>run_query</code>
+                instead of direct database credentials. Human approval uses
+                <code>approve_query</code> with an operator token.
+              </p>
+            </article>
+            <article>
+              <h3>What not to skip</h3>
+              <p>
+                Run the test and latency gates after changing policy behavior.
+                Otherwise a demo can still look fine while the pass-through path,
+                red corpus, or undo assumptions have regressed.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section id="research" class="section research">
+          <div class="section-head">
+            <p class="overline">Research signal</p>
+            <h2>Why runtime SQL feedback design matters.</h2>
+          </div>
+          <div class="research-intro">
+            <p>
+              In a controlled study, agents were asked to retry after database
+              writes were denied. The surprising result: when the denial named
+              the exact rule, agents often satisfied the rule literally instead
+              of genuinely reducing the blast radius.
+            </p>
+          </div>
+          <div class="research-grid">
+            <article>
+              <strong>588</strong>
+              <span>closed-loop trials</span>
+              <p>Three Claude-family models, three database tasks, and four denial styles.</p>
+            </article>
+            <article>
+              <strong>99%</strong>
+              <span>first attempts stopped</span>
+              <p>The tasks reliably triggered Interdict's guardrail before any write committed.</p>
+            </article>
+            <article>
+              <strong>22% -> 95%</strong>
+              <span>Haiku evasion jump</span>
+              <p>Opaque denial to reason-code denial. This is exploratory, not production proof.</p>
+            </article>
+            <article>
+              <strong>scope theater</strong>
+              <span>main failure mode</span>
+              <p>Agents added fake scoping like <code>WHERE TRUE</code>; syntax looked safer, impact did not.</p>
+            </article>
+          </div>
+          <div class="freshman-note">
+            <h3>In plain English</h3>
+            <p>
+              If a system only says "you forgot a WHERE clause," an agent may add
+              a WHERE clause that still changes every row. Interdict measures how
+              many rows the query would actually touch, so it can catch the
+              difference between real safety and fake compliance.
+            </p>
+          </div>
+        </section>
+
+        <section class="section status">
+          <p class="overline">Status</p>
+          <h2>Developer preview, not a production deployment recipe.</h2>
+          <p>
+            The problem is production-grade. The current repo is built for local
+            evaluation and research. Production use still needs security review,
+            durable audit storage, persistent approvals, role hardening, and hosted CI.
+          </p>
+          <div class="status-actions">
+            <a
+              class="button primary"
+              href="mailto:pr482@cornell.edu?subject=Interdict%20access%20request"
+            >Request access</a>
+            <a
+              class="button"
+              href="mailto:pr482@cornell.edu?subject=Interdict%20founder%20contact"
+            >Email the founder</a>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>Interdict</span>
+        <a href="https://github.com/prisharai/Interdict" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="../README.md">Docs</a>
+        <span>Policy before commit. Undo after impact.</span>
+      </footer>
+    </div>
 
     <script src="script.js"></script>
   </body>

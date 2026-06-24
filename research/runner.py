@@ -15,6 +15,7 @@ import re
 import tempfile
 import uuid
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import asyncpg
 
@@ -25,7 +26,7 @@ from engine.policy import Policy
 from engine.simulate import SimulationConfig, load_unique_columns
 from engine.undo import UndoConfig, UndoStore
 
-from .harness import CONDITIONS, Task, classify_attempt
+from .harness import Task, classify_attempt
 
 # Over-reach is HELD (needs confirmation) so the agent gets blast-radius feedback;
 # correctly scoped work (<= confirm_over_rows) executes. Tuned so all three tasks'
@@ -54,6 +55,7 @@ class TurnRecord:
     is_evasion: bool
     note: str
     feedback_shown: str | None
+    order_index: int = 0  # position in the randomized execution order
 
 
 def _blast_radius(decision: dict, task: Task) -> int | None:
@@ -106,12 +108,13 @@ async def _make_session(pool, task: Task):
     return sess, audit
 
 
-async def run_trial(pool, task: Task, condition: str, agent) -> list[TurnRecord]:
-    """One closed-loop trial. Returns the per-turn records."""
+async def run_trial(
+    pool, task: Task, condition: str, render, agent
+) -> list[TurnRecord]:
+    """One closed-loop trial. ``render`` maps a decision to feedback text."""
     sess, audit = await _make_session(pool, task)
     if hasattr(agent, "reset"):
         agent.reset()
-    render = CONDITIONS[condition]
     trial_id = uuid.uuid4().hex[:12]
     prior_blocked_norm: set[str] = set()
     history: list[tuple[str, str]] = []  # (sql, feedback) seen so far
@@ -178,30 +181,47 @@ async def run_experiment(
     tasks,
     conditions,
     schema: str = "public",
+    seed: int = 0,
+    manifest: dict | None = None,
 ) -> str:
-    """Run the full task x condition x trial grid and write JSONL. Returns path.
+    """Run the grid in RANDOMIZED order and write JSONL + a provenance manifest.
 
-    All scratch tables live in ``schema`` (set on the connection search_path), so
-    several models can run concurrently without colliding on table names.
+    Trial order is precomputed, seeded, and shuffled so API drift / rate limits /
+    time effects cannot align with a condition; the order is logged (per-turn
+    ``order_index`` and the full ``trial_order`` in the manifest). All scratch
+    tables live in ``schema`` so models can run concurrently without colliding.
     """
+    import random
+
+    # ``conditions`` is a {name: renderer} mapping (works for v1 or v2 sets).
+    plan = [
+        (t, c) for t in tasks for c in conditions for _ in range(trials_per_cell)
+    ]
+    random.Random(seed).shuffle(plan)
+
+    if manifest is not None:
+        manifest = {**manifest, "seed": seed,
+                    "trial_order": [[t.id, c] for t, c in plan]}
+        Path(out_path).with_suffix(".manifest.json").write_text(
+            json.dumps(manifest, indent=2)
+        )
+
     pool = await asyncpg.create_pool(
         dsn=dsn,
         min_size=1,
         max_size=4,
         server_settings={"search_path": f"{schema}, public"},
     )
-    n = 0
     try:
         if schema != "public":
             async with pool.acquire() as c:
                 await c.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
         with open(out_path, "w", encoding="utf-8") as fh:
-            for task in tasks:
-                for condition in conditions:
-                    for _ in range(trials_per_cell):
-                        for rec in await run_trial(pool, task, condition, agent):
-                            fh.write(json.dumps(asdict(rec)) + "\n")
-                            n += 1
+            for order_index, (task, condition) in enumerate(plan):
+                render = conditions[condition]
+                for rec in await run_trial(pool, task, condition, render, agent):
+                    rec.order_index = order_index
+                    fh.write(json.dumps(asdict(rec)) + "\n")
     finally:
         if schema != "public":
             async with pool.acquire() as c:

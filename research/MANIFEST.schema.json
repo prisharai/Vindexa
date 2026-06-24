@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Run manifest",
+  "description": "Provenance for one experiment run; written next to the run's JSONL.",
+  "type": "object",
+  "required": [
+    "run_id", "timestamp_utc", "git_commit", "taskset", "taskset_hash",
+    "conditions", "model", "model_params", "sdk_version", "trials_per_cell",
+    "seed", "trial_order", "command", "env"
+  ],
+  "properties": {
+    "run_id": {"type": "string"},
+    "timestamp_utc": {"type": "string"},
+    "git_commit": {"type": "string"},
+    "taskset": {"type": "string", "enum": ["v1", "v2"]},
+    "taskset_hash": {"type": "string", "description": "sha256 of the task definitions"},
+    "conditions": {"type": "array", "items": {"type": "string"}},
+    "model": {"type": "string", "description": "exact provider model string"},
+    "model_params": {
+      "type": "object",
+      "properties": {
+        "temperature": {"type": "number"},
+        "top_p": {"type": ["number", "null"]},
+        "max_tokens": {"type": "integer"}
+      }
+    },
+    "sdk_version": {"type": "string"},
+    "trials_per_cell": {"type": "integer"},
+    "seed": {"type": "integer"},
+    "trial_order": {
+      "type": "array",
+      "description": "the shuffled (task, condition) execution order",
+      "items": {"type": "array", "items": {"type": "string"}}
+    },
+    "command": {"type": "string"},
+    "env": {"type": "object", "description": "DSN host, schema, python version"}
+  }
+}

@@ -1,4 +1,4 @@
-# Vindexa
+# Interdict
 
 **Developer preview.** A runtime safety layer that sits between AI agents and a
 database (Postgres first), making risky agent-issued writes safe *before* they
@@ -211,7 +211,7 @@ stays in the client config, never visible to the model.
 **Claude Code** (run from anywhere):
 
 ```bash
-claude mcp add agent-db-safety \
+claude mcp add interdict \
   --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \
   --env AGENT_OPERATOR_TOKEN=choose-a-secret \
   -- uv run --directory /ABSOLUTE/PATH/TO/agent-db-safety python -m adapters.mcp_server
@@ -222,7 +222,7 @@ claude mcp add agent-db-safety \
 ```json
 {
   "mcpServers": {
-    "agent-db-safety": {
+    "interdict": {
       "command": "uv",
       "args": ["run", "--directory", "/ABSOLUTE/PATH/TO/agent-db-safety",
                "python", "-m", "adapters.mcp_server"],

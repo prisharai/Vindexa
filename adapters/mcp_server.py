@@ -555,7 +555,7 @@ async def lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
         await pool.close()
 
 
-mcp = FastMCP("agent-db-safety", lifespan=lifespan)
+mcp = FastMCP("interdict", lifespan=lifespan)
 
 
 @mcp.tool()

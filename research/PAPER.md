@@ -47,8 +47,10 @@ neither covers it:
 Open question, in a database setting: does a **richer** denial make the agent
 *recover faster* or *evade more strategically*? Contributions:
 
-1. **A question and an instrument.** The first controlled study (to our knowledge)
-   of denial-richness effects on agent database behavior, with a released harness.
+1. **A question and an instrument.** We present a controlled study of
+   denial-richness effects on agent database behavior, with a released harness.
+   (Verify the "to our knowledge first" framing with a literature pass before any
+   primacy claim.)
 2. **A blast-radius-based evasion measure.** We define and detect *scope-theater*
    (a `WHERE` that passes syntactic checks but still hits the whole table) — only
    measurable because the engine simulates the write.

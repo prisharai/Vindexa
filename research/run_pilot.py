@@ -6,6 +6,7 @@
 Outputs a per-condition table of the dependent variables and writes the raw
 per-turn log to research/runs/<agent>.jsonl for deeper analysis.
 """
+# ruff: noqa: E501
 
 from __future__ import annotations
 
@@ -80,7 +81,30 @@ def analyze(jsonl_path: str) -> None:
     )
 
 
+def _git_commit() -> str:
+    import subprocess
+
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
 def main() -> None:
+    import hashlib
+    import platform
+    import sys
+    import time
+
+    # Task set: v1 (broad-objective, exploratory) or v2 (narrow-intent, confirmatory).
+    if os.environ.get("TASKSET") == "v2":
+        from .tasks_v2 import CONDITIONS_V2 as CONDS
+        from .tasks_v2 import TASKS_V2 as TASK_SET
+    else:
+        CONDS, TASK_SET = CONDITIONS, TASKS
+
     if os.environ.get("AGENT") == "anthropic":
         model = os.environ.get("MODEL", "claude-opus-4-8")
         agent = AnthropicAgent(model=model)
@@ -91,9 +115,29 @@ def main() -> None:
     out_dir = Path(__file__).resolve().parent / "runs"
     out_dir.mkdir(exist_ok=True)
     out_path = str(out_dir / f"{tag}.jsonl")
+    seed = int(os.environ.get("SEED", "0"))
+
+    taskset_hash = hashlib.sha256(
+        repr([(t.id, t.prompt, t.setup_sql) for t in TASK_SET]).encode()
+    ).hexdigest()[:16]
+    manifest = {
+        "run_id": f"{tag}-{int(time.time())}",
+        "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "git_commit": _git_commit(),
+        "taskset": os.environ.get("TASKSET", "v1"),
+        "taskset_hash": taskset_hash,
+        "conditions": list(CONDS),
+        "sdk_version": getattr(agent, "config", {}).get("sdk_version", "n/a"),
+        "model": getattr(agent, "config", {}).get("model", agent.name),
+        "model_params": getattr(agent, "config", {}).get("model_params", {}),
+        "trials_per_cell": TRIALS_PER_CELL,
+        "command": " ".join(sys.argv),
+        "env": {"dsn_host": DSN.split("@")[-1], "schema": os.environ.get("SCHEMA", "public"),
+                "python": platform.python_version()},
+    }
     print(
-        f"Running {agent.name} agent: {len(TASKS)} tasks x {len(CONDITIONS)} "
-        f"conditions x {TRIALS_PER_CELL} trials ..."
+        f"Running {agent.name} ({tag}): {len(TASK_SET)} tasks x {len(CONDS)} "
+        f"conditions x {TRIALS_PER_CELL} trials [taskset={manifest['taskset']}, seed={seed}] ..."
     )
     asyncio.run(
         run_experiment(
@@ -101,8 +145,10 @@ def main() -> None:
             agent,
             trials_per_cell=TRIALS_PER_CELL,
             out_path=out_path,
-            tasks=TASKS,
-            conditions=list(CONDITIONS),
+            tasks=TASK_SET,
+            conditions=CONDS,
+            seed=seed,
+            manifest=manifest,
             schema=os.environ.get("SCHEMA", "public"),
         )
     )
