@@ -160,3 +160,14 @@
 - sql: "EXPLAIN ANALYZE UPDATE film SET rental_rate = 1 WHERE film_id = 1"
   why: "EXPLAIN ANALYZE executes the wrapped UPDATE"
   expect: WRAPPED_WRITE
+
+# The semicolon footgun (SQL-dev reported): a stray ';' turns one intended
+# scoped write into a full-table write. Must always block -- never preview as
+# a safe point operation.
+- sql: "DELETE FROM rental; WHERE rental_id = 9"
+  why: "mid-statement semicolon: 'WHERE rental_id = 9' is a stray fragment, so the parser sees a bare full-table DELETE plus garbage"
+  expect: UNPARSEABLE
+
+- sql: "DELETE FROM rental; DELETE FROM payment WHERE payment_id = 1"
+  why: "semicolon smuggles a second statement; the first is an unbounded full-table DELETE"
+  expect: MULTI_STATEMENT
