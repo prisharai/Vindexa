@@ -31,6 +31,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from engine.security import audit_safe
+
 # Bound the queue so a misbehaving/backed-up writer can't grow memory without
 # limit. Generously sized: at this depth we'd rather drop+count than block.
 _DEFAULT_MAX_QUEUE = 10_000
@@ -73,6 +75,7 @@ class AuditLog:
         query path.
         """
         entry.setdefault("ts", time.time())
+        entry = audit_safe(entry)
         try:
             self._queue.put_nowait(entry)
         except asyncio.QueueFull:

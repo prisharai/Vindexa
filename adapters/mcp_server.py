@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
+import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -19,6 +21,7 @@ from engine.audit import AuditLog
 from engine.classifier import DDL, WRITE, classify
 from engine.intent import check_intent, llm_second_opinion
 from engine.policy import Policy, ReasonCode, apply_blast_radius, apply_intent, evaluate
+from engine.security import client_db_error, diagnostic_error
 from engine.simulate import is_risky_write, load_unique_columns, simulate
 from engine.undo import UndoStore, execute_with_undo, revert
 
@@ -39,6 +42,7 @@ POLICY_PATH = os.environ.get(
 POOL_MIN_SIZE = int(os.environ.get("AGENT_POOL_MIN", "1"))
 POOL_MAX_SIZE = int(os.environ.get("AGENT_POOL_MAX", "10"))
 OPERATOR_TOKEN = os.environ.get("AGENT_OPERATOR_TOKEN")
+MIN_OPERATOR_TOKEN_LENGTH = 32
 
 
 @dataclass(frozen=True)
@@ -83,7 +87,13 @@ class ShadowSession:
 
     def _operator_allowed(self, token: str | None) -> bool:
         """True only when operator approval is enabled and the token matches."""
-        return bool(self._operator_token) and token == self._operator_token
+        if (
+            not self._operator_token
+            or len(self._operator_token) < MIN_OPERATOR_TOKEN_LENGTH
+            or token is None
+        ):
+            return False
+        return secrets.compare_digest(token, self._operator_token)
 
     def _approval_summary(self, approval_id: str, pending: PendingApproval) -> dict:
         return {
@@ -384,8 +394,10 @@ class ShadowSession:
                     status = stmt.get_statusmsg()
                     rows = [dict(r) for r in records]
         except asyncpg.PostgresError as exc:
-            # Surface the DB's own error to the agent verbatim; don't editorialize.
-            error = f"{type(exc).__name__}: {exc}"
+            error = client_db_error(exc)
+            diagnostic = diagnostic_error(exc)
+        else:
+            diagnostic = None
 
         elapsed_ms = (time.perf_counter() - started) * 1000.0
 
@@ -400,6 +412,7 @@ class ShadowSession:
                 "status": status,
                 "rows_returned": len(rows),
                 "error": error,
+                "error_detail": diagnostic,
                 "duration_ms": round(elapsed_ms, 3),
                 "blocked": False,
                 "undo_action_id": action_id,
@@ -642,6 +655,17 @@ async def audit_status(ctx: Context) -> dict[str, Any]:
 
 def main() -> None:
     """Entry point: run the MCP server over stdio (the standard MCP transport)."""
+    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        print(
+            "Usage: interdict\n\n"
+            "Run the Interdict MCP server over stdio.\n\n"
+            "Environment:\n"
+            "  AGENT_DB_DSN             Postgres DSN to protect\n"
+            "  AGENT_OPERATOR_TOKEN     Token required for operator approvals\n"
+            "  AGENT_POLICY             YAML policy path\n"
+            "  AGENT_AUDIT_LOG          JSONL audit log path"
+        )
+        return
     mcp.run()
 
 

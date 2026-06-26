@@ -43,20 +43,32 @@ the path of a query you're waiting on.
 
 ## User guide
 
-### 1. Install & launch
+### 1. Install
 
-One install, then one command opens the launcher:
+Install Interdict from PyPI:
 
 ```bash
-# A) pip
-pip install agent-db-safety        # from source today: pip install .
-agentdb
+pip install interdict-db
+```
 
-# B) Docker (brings up Postgres + the launcher together)
-docker compose --profile app run --rm app
+Start the MCP server:
 
-# C) From source (dev)
+```bash
+AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \
+AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+interdict
+```
+
+For local development from the repo:
+
+```bash
 uv sync && uv run python -m adapters.tui
+```
+
+Docker can bring up Postgres and the launcher together:
+
+```bash
+docker compose --profile app run --rm app
 ```
 
 The launcher asks **who is writing the SQL**:
@@ -118,16 +130,16 @@ The agent talks to Interdict's MCP server and calls `run_query` instead of
 touching the database directly. Same engine, same guarantees as Human Mode. Two
 ways to spell the launch command in the configs below:
 
-- **pip-installed:** `agentdb-mcp` (works from any directory)
-- **from source:** `uv run --directory /ABSOLUTE/PATH/TO/agent-db-safety agentdb-mcp`
+- **pip-installed:** `interdict` (works from any directory)
+- **from source:** `uv run --directory /ABSOLUTE/PATH/TO/agent-db-safety interdict`
 
 **Claude Code:**
 
 ```bash
 claude mcp add interdict \
   --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \
-  --env AGENT_OPERATOR_TOKEN=choose-a-secret \
-  -- agentdb-mcp
+  --env AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+  -- interdict
 ```
 
 **Codex** (CLI, or edit `~/.codex/config.toml`):
@@ -135,22 +147,22 @@ claude mcp add interdict \
 ```bash
 codex mcp add interdict \
   --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \
-  --env AGENT_OPERATOR_TOKEN=choose-a-secret \
-  -- agentdb-mcp
+  --env AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+  -- interdict
 ```
 
 ```toml
 # ~/.codex/config.toml   (table is mcp_servers, with an underscore)
 [mcp_servers.interdict]
-command = "agentdb-mcp"        # from source: command = "uv", args = ["run",
-                               #   "--directory","/ABS/PATH","agentdb-mcp"]
+command = "interdict"          # from source: command = "uv", args = ["run",
+                               #   "--directory","/ABS/PATH","interdict"]
 [mcp_servers.interdict.env]
 AGENT_DB_DSN = "postgresql://postgres:postgres@localhost:5433/pagila"
-AGENT_OPERATOR_TOKEN = "choose-a-secret"
+AGENT_OPERATOR_TOKEN = "paste-a-random-token-at-least-32-chars"
 ```
 
 > **Codex PATH gotcha:** Codex may not inherit your shell's PATH. If it can't
-> find `agentdb-mcp`, use the absolute path from `which agentdb-mcp` as
+> find `interdict`, use the absolute path from `which interdict` as
 > `command`. Verify with `codex mcp list`, then `/mcp` in the Codex TUI.
 
 A held (confirmation-gated) write is approved out-of-band with `approve_query`
@@ -227,8 +239,8 @@ Environment variables (used by both modes):
 |---|---|---|
 | `AGENT_DB_DSN` | `postgresql://postgres:postgres@localhost:5433/pagila` | Target Postgres. Default is local-dev only. |
 | `AGENT_POLICY` | `policies/default.yaml` | YAML policy loaded at startup. |
-| `AGENT_AUDIT_LOG` | `logs/audit.jsonl` | Async JSONL audit log (also feeds `\stats`). |
-| `AGENT_OPERATOR_TOKEN` | unset | Required to approve held writes via MCP. |
+| `AGENT_AUDIT_LOG` | `logs/audit.jsonl` | Async JSONL audit log (also feeds `\stats`). Raw SQL/task text is redacted; hashes are kept for correlation. |
+| `AGENT_OPERATOR_TOKEN` | unset | Required to approve held writes via MCP. Must be a random token of at least 32 characters. |
 | `AGENT_POOL_MIN` / `AGENT_POOL_MAX` | `1` / `10` | asyncpg pool sizing. |
 
 MCP tools the server exposes:
@@ -262,6 +274,36 @@ Kept visible on purpose:
 - This is a local developer preview, not a production recipe. Use a
   least-privilege Postgres role and review your policy before pointing it at real
   data.
+
+## Pre-launch security checklist
+
+Before putting Interdict in front of a real database:
+
+- Publish a privacy policy if you collect or process user data. Know which
+  tables may contain personal data, where audit logs live, and who can read
+  them.
+- Use a dedicated least-privilege Postgres role for `AGENT_DB_DSN`; do not use
+  a superuser or owner role in production. If your application uses Supabase,
+  keep Row Level Security policies on application-facing tables. Interdict is a
+  guardrail, not a replacement for database authorization.
+- Keep all secrets server-side. Never expose `AGENT_DB_DSN`,
+  `AGENT_OPERATOR_TOKEN`, provider API keys, or PyPI tokens in browser code,
+  client bundles, screenshots, logs, or docs.
+- Use a random `AGENT_OPERATOR_TOKEN` of at least 32 characters. Short configured
+  tokens are rejected.
+- If you wrap Interdict in an HTTP API, add authentication, per-user and per-IP
+  rate limits, strict CORS for your domains only, security headers, and CAPTCHA
+  such as Cloudflare Turnstile on public forms. The bundled MCP server runs over
+  stdio and does not provide a public web endpoint.
+- Validate requests on the server. Client-side checks are only UX.
+- Show generic database errors to users or agents. Keep diagnostics on the
+  server side; Interdict returns generic database execution failures and redacts
+  raw SQL/task text from its JSONL audit log.
+- Test the failure paths: invalid DB credentials, nonexistent tables, duplicate
+  approval attempts, wrong operator token, expired or repeated confirmation
+  flows, blocked SQL, and undo conflicts.
+- Review changes against the current OWASP Top 10 and OWASP API Security Top 10
+  if you add a hosted web/API surface.
 
 ## Repo layout
 

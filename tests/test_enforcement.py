@@ -23,6 +23,7 @@ DB_DSN = os.environ.get(
     "AGENT_DB_DSN",
     "postgresql://postgres:postgres@localhost:5433/pagila",
 )
+STRONG_OPERATOR_TOKEN = "test-operator-token-with-at-least-32-chars"
 
 
 @pytest.fixture
@@ -196,7 +197,7 @@ async def test_operator_approval_requires_token(make_session, scratch):
             ),
         )
     )
-    sess._operator_token = "secret-operator-token"
+    sess._operator_token = STRONG_OPERATOR_TOKEN
     held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
     approval_id = held["approval_id"]
 
@@ -207,7 +208,7 @@ async def test_operator_approval_requires_token(make_session, scratch):
     assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
 
     approved = await sess.approve_query(
-        approval_id, operator_token="secret-operator-token", operator="human-1"
+        approval_id, operator_token=STRONG_OPERATOR_TOKEN, operator="human-1"
     )
     assert approved["ok"] is True
     assert approved["status"] == "DELETE 29"
@@ -255,7 +256,7 @@ async def test_revert_requires_same_agent_or_operator_token(make_session, scratc
     sess, _ = await make_session(
         Policy(allowed_tables=None, undo=UndoConfig(enabled=True))
     )
-    sess._operator_token = "secret-operator-token"
+    sess._operator_token = STRONG_OPERATOR_TOKEN
     await scratch.execute("ALTER TABLE _sim_scratch ADD COLUMN label text")
     res = await sess.run_query(
         "UPDATE _sim_scratch SET label = 'tagged' WHERE id = 1",
@@ -272,10 +273,30 @@ async def test_revert_requires_same_agent_or_operator_token(make_session, scratc
     approved = await sess.revert_write(
         res["undo_action_id"],
         agent="agent-other",
-        operator_token="secret-operator-token",
+        operator_token=STRONG_OPERATOR_TOKEN,
     )
     assert approved["ok"] is True
     assert await scratch.fetchval("SELECT label FROM _sim_scratch WHERE id = 1") is None
+
+
+async def test_operator_token_rejects_short_configured_secret(make_session, scratch):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    sess._operator_token = "short"
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+
+    denied = await sess.approve_query(
+        held["approval_id"], operator_token="short", operator="human-1"
+    )
+
+    assert denied["ok"] is False
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
 
 
 async def test_reads_carry_no_undo_action(make_session):

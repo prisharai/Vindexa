@@ -1,5 +1,8 @@
 # Keep the build context small + the image clean.
 .git
+.env
+.envrc
+.pypirc
 .venv
 dist
 build

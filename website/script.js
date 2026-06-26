@@ -17,13 +17,13 @@ const runSteps = [
     label: "Step 0",
     title: "Install Interdict",
     copy:
-      "Install the launcher once. If you are evaluating from this repo today, install from source. If you want the app and Postgres together, use the Docker profile.",
+      "Install the MCP server once. If you are evaluating from this repo, install from source. If you want the app and Postgres together, use the Docker profile.",
     code:
-      "pip install agent-db-safety\n# from source today:\npip install .\n\n# Docker alternative:\ndocker compose --profile app run --rm app",
+      "pip install interdict-db\n# from source:\npip install .\n\n# Docker alternative:\ndocker compose --profile app run --rm app",
     expected:
-      "The agentdb and agentdb-mcp commands are available. The Docker path opens the launcher after the database becomes healthy.",
+      "The interdict, interdict-demo, agentdb, and agentdb-mcp commands are available. The Docker path opens the launcher after the database becomes healthy.",
     note:
-      "The package exposes two entrypoints: agentdb for the terminal launcher, and agentdb-mcp for agent integrations.",
+      "Use interdict for agent integrations. agentdb remains the terminal launcher.",
   },
   {
     label: "Step 1",
@@ -55,11 +55,11 @@ const runSteps = [
     copy:
       "Point Claude Code or Codex at Interdict's MCP server. The agent calls run_query instead of receiving raw database credentials.",
     code:
-      "claude mcp add interdict \\\n  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \\\n  --env AGENT_OPERATOR_TOKEN=choose-a-secret \\\n  -- agentdb-mcp\n\ncodex mcp add interdict \\\n  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \\\n  --env AGENT_OPERATOR_TOKEN=choose-a-secret \\\n  -- agentdb-mcp",
+      "claude mcp add interdict \\\n  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \\\n  --env AGENT_OPERATOR_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))') \\\n  -- interdict\n\ncodex mcp add interdict \\\n  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \\\n  --env AGENT_OPERATOR_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))') \\\n  -- interdict",
     expected:
       "The agent can call run_query. Held writes require approve_query with an operator token the model never sees.",
     note:
-      "If Codex cannot find agentdb-mcp, use the absolute path from which agentdb-mcp in your MCP config.",
+      "If Codex cannot find interdict, use the absolute path from which interdict in your MCP config.",
   },
   {
     label: "Step 4",

@@ -17,6 +17,7 @@ it creates and drops its own table and never touches real data.
 
 import asyncio
 import os
+import sys
 import tempfile
 
 import asyncpg
@@ -139,5 +140,18 @@ async def main() -> None:
         await pool.close()
 
 
-if __name__ == "__main__":
+def cli_main() -> None:
+    """Console-script entry point for ``interdict-demo``."""
+    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        print(
+            "Usage: interdict-demo\n\n"
+            "Run the Interdict demo against the dev Postgres database.\n\n"
+            "Environment:\n"
+            "  AGENT_DB_DSN    Postgres DSN; defaults to local Pagila dev database"
+        )
+        return
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    cli_main()

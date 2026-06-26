@@ -15,6 +15,7 @@ import json
 import os
 import time
 import uuid
+from hashlib import sha256
 
 import asyncpg
 import pytest
@@ -110,7 +111,7 @@ async def test_db_error_is_captured_not_raised(session):
     # Must NOT raise -- shadow mode observes; the agent gets a structured error.
     result = await sess.run_query("SELECT * FROM table_that_does_not_exist")
     assert result["error"] is not None
-    assert "UndefinedTable" in result["error"] or "does not exist" in result["error"]
+    assert "Database execution failed" in result["error"]
     assert result["rows"] == []
 
 
@@ -122,15 +123,18 @@ async def test_every_statement_is_audited(session):
     await sess.run_query("SELECT * FROM nope_not_here", stated_task=task)
 
     entries = await _wait_for_lines(log_path, 2)
-    by_sql = {e["sql"]: e for e in entries}
+    by_sql_hash = {e["sql_sha256"]: e for e in entries}
 
-    ok = by_sql["SELECT 1 AS one"]
-    assert ok["stated_task"] == task
+    ok = by_sql_hash[sha256(b"SELECT 1 AS one").hexdigest()]
+    assert ok["sql"] == "[REDACTED]"
+    assert ok["sql_redacted"] is True
+    assert ok["stated_task"] == "[REDACTED]"
+    assert ok["stated_task_sha256"] == sha256(task.encode("utf-8")).hexdigest()
     assert ok["agent"] == "agent-x"
     assert ok["status"] == "SELECT 1"
     assert ok["error"] is None
     assert "duration_ms" in ok and isinstance(ok["duration_ms"], (int, float))
     assert "ts" in ok
 
-    failed = by_sql["SELECT * FROM nope_not_here"]
+    failed = by_sql_hash[sha256(b"SELECT * FROM nope_not_here").hexdigest()]
     assert failed["error"] is not None  # failures are logged too (corpus)

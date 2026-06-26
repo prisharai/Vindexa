@@ -43,6 +43,7 @@ from pglast import ast, parse_sql
 from pglast.stream import RawStream
 
 from engine.classifier import WRITE, Classification
+from engine.security import client_db_error
 
 # Primary-key columns of a relation, in index order.
 _PK_SQL = """
@@ -329,7 +330,7 @@ async def _plain_execute(conn, sql: str) -> tuple[str | None, list, str | None]:
         records = await stmt.fetch()
         return stmt.get_statusmsg(), [dict(r) for r in records], None
     except asyncpg.PostgresError as exc:
-        return None, [], f"{type(exc).__name__}: {exc}"
+        return None, [], client_db_error(exc)
 
 
 async def execute_with_undo(
@@ -448,7 +449,7 @@ async def execute_with_undo(
         return UndoOutcome(
             None,
             [],
-            f"{type(exc).__name__}: {exc}",
+            client_db_error(exc),
             None,
             reversible=False,
             reason="execution failed",

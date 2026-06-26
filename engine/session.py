@@ -35,6 +35,7 @@ from engine.policy import (
     apply_blast_radius,
     evaluate,
 )
+from engine.security import client_db_error
 from engine.simulate import is_risky_write, simulate
 from engine.undo import UndoStore, execute_with_undo, revert
 
@@ -377,7 +378,7 @@ class GuardedSession:
                     status = stmt.get_statusmsg()
                     rows = [dict(r) for r in records]
         except asyncpg.PostgresError as exc:
-            error = f"{type(exc).__name__}: {exc}"
+            error = client_db_error(exc)
 
         self._record(
             {

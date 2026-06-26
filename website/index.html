@@ -304,10 +304,10 @@ execute? [y/N]</code></pre>
               <div class="run-copy">
                 <p class="run-label" id="run-step-label">step 0</p>
                 <h3 id="run-step-title">Install Interdict</h3>
-                <p id="run-step-copy">Install the launcher, or run the Docker app profile to get Postgres and the terminal UI together.</p>
+                <p id="run-step-copy">Install the MCP server, or run the Docker app profile to get Postgres and the terminal UI together.</p>
                 <div class="run-expected">
                   <span>what good looks like</span>
-                  <p id="run-step-expected">The agentdb and agentdb-mcp commands are available.</p>
+                  <p id="run-step-expected">The interdict, interdict-demo, agentdb, and agentdb-mcp commands are available.</p>
                 </div>
                 <p class="run-note" id="run-step-note">Docker alternative: docker compose --profile app run --rm app</p>
               </div>
@@ -316,8 +316,8 @@ execute? [y/N]</code></pre>
                   <span class="console-dots" aria-hidden="true"><i></i><i></i><i></i></span>
                   <button class="copy-command" type="button">copy</button>
                 </div>
-                <pre><code id="run-step-code">pip install agent-db-safety
-# from source today:
+                <pre><code id="run-step-code">pip install interdict-db
+# from source:
 pip install .</code></pre>
               </div>
             </div>
