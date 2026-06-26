@@ -1,6 +1,6 @@
 const gate = document.querySelector("#gate");
 const site = document.querySelector("#site");
-const openControls = document.querySelectorAll(".crest-button");
+const enterButton = document.querySelector(".enter-button");
 const themeToggle = document.querySelector(".theme-toggle");
 const runTabs = document.querySelectorAll(".run-tab");
 const runStepLabel = document.querySelector("#run-step-label");
@@ -92,10 +92,7 @@ function openSite() {
 
 function updateThemeButton() {
   const isLight = root.dataset.theme === "light";
-  themeToggle.setAttribute(
-    "aria-label",
-    isLight ? "Switch to dark mode" : "Switch to light mode",
-  );
+  themeToggle.setAttribute("aria-checked", isLight ? "false" : "true");
 }
 
 function toggleTheme() {
@@ -103,10 +100,6 @@ function toggleTheme() {
   root.dataset.theme = nextTheme;
   window.localStorage.setItem("interdict-theme", nextTheme);
   updateThemeButton();
-}
-
-function updateBlossomDrift() {
-  root.style.setProperty("--scroll-y", String(window.scrollY));
 }
 
 function showRunStep(index) {
@@ -134,12 +127,8 @@ async function copyRunCommand() {
   }
 }
 
-openControls.forEach((control) => {
-  control.addEventListener("click", openSite);
-});
-
+enterButton.addEventListener("click", openSite);
 themeToggle.addEventListener("click", toggleTheme);
-window.addEventListener("scroll", updateBlossomDrift, { passive: true });
 
 runTabs.forEach((tab, index) => {
   tab.addEventListener("click", () => showRunStep(index));
@@ -152,5 +141,4 @@ if (window.location.hash && window.location.hash !== "#gate") {
 }
 
 updateThemeButton();
-updateBlossomDrift();
 showRunStep(0);
