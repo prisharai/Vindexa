@@ -121,6 +121,62 @@ async def test_executed_write_is_reversible(sess):
         assert await c.fetchval("SELECT val FROM _sess_test WHERE id = 7") == "v7"
 
 
+# --- human override of a block -----------------------------------------------
+
+
+async def test_override_is_refused_unless_session_allows_it(sess):
+    # The default session (allow_override=False) must never run a block, even
+    # when override=True is passed -- the agent path can't opt in.
+    prop = await sess.propose("DELETE FROM _sess_test")
+    res = await sess.execute(prop, override=True)
+    assert not res.executed and res.refused == "blocked"
+    assert await _count(sess) == 1000
+
+
+async def test_human_override_runs_block_and_stays_reversible():
+    # A session built with allow_override=True (Human Mode) can deliberately run
+    # a blocked write -- and a full-table DELETE on a PK table is still undoable.
+    try:
+        pool = await asyncpg.create_pool(dsn=DB_DSN, min_size=1, max_size=4, timeout=5)
+    except (OSError, asyncpg.PostgresError) as exc:
+        pytest.skip(f"dev Postgres not reachable ({exc})")
+    async with pool.acquire() as c:
+        await c.execute("DROP TABLE IF EXISTS _ovr_test")
+        await c.execute("CREATE TABLE _ovr_test (id int primary key, val text)")
+        await c.execute(
+            "INSERT INTO _ovr_test SELECT g, 'v'||g FROM generate_series(1,50) g"
+        )
+        uniq = await load_unique_columns(c)
+    policy = Policy(
+        allowed_tables=frozenset({"_ovr_test"}),
+        simulation=SimulationConfig(enabled=True, precise=True, confirm_over_rows=10),
+        undo=UndoConfig(enabled=True, block_non_reversible=False),
+    )
+    sess = GuardedSession(
+        pool,
+        policy,
+        undo_store=UndoStore(policy.undo),
+        unique_columns=uniq,
+        allow_override=True,
+    )
+    try:
+        prop = await sess.propose("DELETE FROM _ovr_test")  # no WHERE -> BLOCK
+        assert prop.verdict == BLOCK
+        res = await sess.execute(prop, override=True)
+        assert res.executed and res.overridden and res.action_id
+        async with pool.acquire() as c:
+            assert await c.fetchval("SELECT count(*) FROM _ovr_test") == 0
+        # the overridden full-table delete is still revertible
+        rev = await sess.revert(res.action_id)
+        assert rev.ok
+        async with pool.acquire() as c:
+            assert await c.fetchval("SELECT count(*) FROM _ovr_test") == 50
+    finally:
+        async with pool.acquire() as c:
+            await c.execute("DROP TABLE IF EXISTS _ovr_test")
+        await pool.close()
+
+
 # --- the semicolon footgun (regression) --------------------------------------
 
 

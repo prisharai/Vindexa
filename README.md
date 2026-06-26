@@ -149,6 +149,56 @@ Kept visible on purpose — this honesty is a feature:
   least-privilege Postgres role and review policies before pointing it at real
   data.
 
+## Install & launch
+
+One install, then one command opens the launcher. Pick the path that fits your
+workflow:
+
+```bash
+# A) pip — installs the `agentdb` launcher
+pip install agent-db-safety        # (from source today: pip install .)
+agentdb                            # opens the landing screen
+
+# B) Docker — brings up Postgres + the launcher together
+docker compose --profile app run --rm app
+
+# C) From source (dev)
+uv sync && uv run python -m adapters.tui
+```
+
+The landing screen asks **who is writing the SQL**:
+
+- **🤖 Agent Mode** — your AI agent (Claude Code, Cursor, …) writes SQL through
+  our MCP server; the safety layer guards it. See *Connect it to your agent*.
+- **⌨ Human Mode** — *you* write SQL by hand. Every statement is parsed,
+  policy-checked, and — for a risky write — **simulated so you see the blast
+  radius before anything runs**. Destructive writes ask before executing; every
+  write prints an undo id (`\undo` to reverse it). Because you're the author, a
+  block is advice, not a wall: `\override` runs it anyway (audited, and still
+  undoable when the statement's shape allows).
+
+```text
+agentdb ▸ DELETE FROM clients WHERE active = true
+╭─ ⚠ CONFIRM WRITE ─────────────────────────────╮
+│ DELETE FROM clients WHERE active = true        │
+│ Blast radius: 2,300,000 rows (precise)         │
+│ Reversible: yes — an undo id will be kept      │
+╰────────────────────────────────────────────────╯
+  Execute? [y/n] (n):
+```
+
+See what the layer has caught for you any time with `\stats` (or `agentdb
+stats`): statements guarded, blocked, held for confirmation, overrides, and the
+largest blast radius it held back.
+
+> **Why this beats a `.log`/dump backup.** A backup is coarse (whole database),
+> slow to restore, and anonymous. Here, *every* write is recorded per-action and
+> attributed — so you undo a single mistaken statement instantly with its id,
+> with a full audit trail, instead of restoring the entire database and losing
+> everyone else's work since the dump.
+
+> npm packaging is planned; today the native paths are pip and Docker.
+
 ## Quickstart
 
 Prerequisites: [Docker](https://docs.docker.com/get-docker/) (Compose v2) and

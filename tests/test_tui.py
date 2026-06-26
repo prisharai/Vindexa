@@ -31,6 +31,16 @@ _POLICY = Policy(
 )
 
 
+def _mk_session(pool, uniq, *, allow_override=False):
+    return GuardedSession(
+        pool,
+        _POLICY,
+        undo_store=UndoStore(_POLICY.undo),
+        unique_columns=uniq,
+        allow_override=allow_override,
+    )
+
+
 @pytest.fixture
 async def sess():
     try:
@@ -45,9 +55,7 @@ async def sess():
         )
         uniq = await load_unique_columns(c)
     try:
-        yield GuardedSession(
-            pool, _POLICY, undo_store=UndoStore(_POLICY.undo), unique_columns=uniq
-        )
+        yield _mk_session(pool, uniq, allow_override=True)
     finally:
         async with pool.acquire() as c:
             await c.execute("DROP TABLE IF EXISTS _tui_test")
@@ -90,6 +98,33 @@ async def test_blocked_write_never_runs(monkeypatch, sess):
     # No prompt should ever be reached for a blocked statement.
     _answers(monkeypatch, "y")
     history: list = []
-    await tui._run_sql(sess, history, "DELETE FROM _tui_test")  # no WHERE -> block
+    prop = await tui._run_sql(sess, history, "DELETE FROM _tui_test")  # block
+    assert prop is not None and prop.verdict == "block"
+    assert await _count(sess) == 1000
+    assert history == []
+
+
+async def test_override_runs_the_blocked_write(monkeypatch, sess):
+    # A block is advice for a human: \override (then a 'y' confirm) runs it.
+    history: list = []
+    prop = await tui._run_sql(sess, history, "DELETE FROM _tui_test")
+    assert prop.verdict == "block" and await _count(sess) == 1000
+
+    _answers(monkeypatch, "y")  # confirm the override warning
+    await tui._do_override(sess, history, prop)
+    assert await _count(sess) == 0
+    assert len(history) == 1  # still recorded + undoable
+
+    # and the overridden write reverts cleanly
+    _answers(monkeypatch, "y")
+    await tui._do_revert(sess, history, "\\undo")
+    assert await _count(sess) == 1000
+
+
+async def test_override_declined_does_not_run(monkeypatch, sess):
+    history: list = []
+    prop = await tui._run_sql(sess, history, "DELETE FROM _tui_test")
+    _answers(monkeypatch, "n")  # decline the override
+    await tui._do_override(sess, history, prop)
     assert await _count(sess) == 1000
     assert history == []

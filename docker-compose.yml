@@ -33,5 +33,19 @@ services:
       timeout: 5s
       retries: 10
 
+  # The safety-layer launcher. Behind a profile so a plain `docker compose up`
+  # still brings up only Postgres. Run the interactive TUI with:
+  #   docker compose --profile app run --rm app
+  app:
+    build: .
+    profiles: ["app"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AGENT_DB_DSN: postgresql://postgres:postgres@postgres:5432/pagila
+    stdin_open: true
+    tty: true
+
 volumes:
   pgdata:

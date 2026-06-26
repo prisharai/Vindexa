@@ -126,6 +126,7 @@ class Result:
     action_id: str | None = None
     reversible: bool | None = None
     undo_reason: str | None = None
+    overridden: bool = False  # ran despite a BLOCK, on a deliberate human override
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -137,6 +138,7 @@ class Result:
             "action_id": self.action_id,
             "reversible": self.reversible,
             "undo_reason": self.undo_reason,
+            "overridden": self.overridden,
         }
 
 
@@ -167,12 +169,18 @@ class GuardedSession:
         undo_store: UndoStore | None = None,
         unique_columns: frozenset[str] = frozenset(),
         audit=None,
+        allow_override: bool = False,
     ) -> None:
         self._pool = pool
         self._policy = policy
         self._undo_store = undo_store
         self._unique_columns = unique_columns
         self._audit = audit  # optional AuditLog; record() is non-blocking
+        # When True, a caller may deliberately run a BLOCKed statement via
+        # execute(override=True). This is a HUMAN escape hatch (Human Mode opts
+        # in); the MCP/agent path never constructs a session with it, so an agent
+        # can never override a block. Off by default -- fail closed (sec. 4).
+        self._allow_override = allow_override
 
     @property
     def _enforce(self) -> bool:
@@ -273,15 +281,20 @@ class GuardedSession:
         *,
         actor: str | None = None,
         force: bool = False,
+        override: bool = False,
     ) -> Result:
         """Run a proposal, honoring its verdict.
 
-        * BLOCK  -> never runs (``refused="blocked"``).
-        * CONFIRM -> runs only when ``force=True`` (the human said yes); otherwise
-          ``refused="needs_confirmation"``.
+        * BLOCK  -> never runs, UNLESS ``override=True`` *and* this session was
+          built with ``allow_override=True`` (the human escape hatch). An
+          overridden write still goes through undo capture when its shape allows,
+          so it stays revertible, and the bypassed violations are audited.
+        * CONFIRM -> runs only when ``force=True`` (the human said yes) or under a
+          deliberate ``override``; otherwise ``refused="needs_confirmation"``.
         * ALLOW / PASSTHROUGH -> runs.
         """
-        if proposal.verdict == BLOCK:
+        can_override = override and self._allow_override
+        if proposal.verdict == BLOCK and not can_override:
             self._record(
                 {
                     "event": "execute_refused",
@@ -292,8 +305,22 @@ class GuardedSession:
                 }
             )
             return Result(executed=False, refused="blocked")
-        if proposal.verdict == CONFIRM and not force:
+        if proposal.verdict == CONFIRM and not force and not can_override:
             return Result(executed=False, refused="needs_confirmation")
+
+        overridden = proposal.verdict == BLOCK and can_override
+        if overridden:
+            # A human is deliberately bypassing a block. Audit it loudly with the
+            # exact violations being overridden -- this is the accountability that
+            # makes the escape hatch acceptable (sec. 11).
+            self._record(
+                {
+                    "event": "execute_override",
+                    "actor": actor or proposal.actor,
+                    "sql": proposal.sql,
+                    "violations": list(proposal.violations),
+                }
+            )
 
         effective_sql = proposal.effective_sql
         classification = proposal.classification
@@ -340,6 +367,7 @@ class GuardedSession:
                             refused="non_reversible",
                             reversible=False,
                             undo_reason=undo_reason,
+                            overridden=overridden,
                         )
                 else:
                     # prepare()+fetch() runs the statement once and exposes both
@@ -365,6 +393,7 @@ class GuardedSession:
                 "action_id": action_id,
                 "reversible": reversible,
                 "confirmed": force,
+                "overridden": overridden,
             }
         )
         return Result(
@@ -376,6 +405,7 @@ class GuardedSession:
             action_id=action_id,
             reversible=reversible,
             undo_reason=undo_reason,
+            overridden=overridden,
         )
 
     async def revert(self, action_id: str, *, actor: str | None = None):
