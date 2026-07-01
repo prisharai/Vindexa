@@ -160,6 +160,14 @@ def main() -> None:
     )
     analyze(out_path)
 
+    usage = getattr(agent, "usage", None)
+    if usage and usage.get("calls"):
+        print(
+            f"\n[usage] calls={usage['calls']} "
+            f"prompt_tokens={usage['prompt_tokens']} "
+            f"completion_tokens={usage['completion_tokens']}"
+        )
+
 
 if __name__ == "__main__":
     main()

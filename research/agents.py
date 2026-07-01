@@ -212,9 +212,58 @@ class OpenAIAgent:
             raise RuntimeError("set OPENAI_API_KEY to run the real experiment")
         self._client = openai.OpenAI()
         self._model = model
-        # Deterministic decoding for reproducibility; recorded in the manifest.
-        self._params = {"temperature": 0.0, "top_p": None, "max_tokens": 400}
+        # gpt-5.x / reasoning models use `max_completion_tokens` and reject a
+        # non-default `temperature`; older chat models use `max_tokens`. We probe
+        # once (below) and fall back cleanly, so the same class drives either.
+        # gpt-5.x are reasoning models: they spend completion tokens on internal
+        # reasoning before the answer, billed as output. `reasoning_effort=minimal`
+        # keeps that burn small AND matches the Claude runs (no extended thinking),
+        # so the cross-provider comparison is apples-to-apples. The ceiling is
+        # generous headroom -- only tokens actually generated are billed.
+        self._max_completion = 2000
+        self._send_temperature = True  # dropped on first "unsupported" response
+        self._reasoning_effort = "minimal"
+        self._send_reasoning = True  # dropped if the model rejects the param
+        self._use_legacy_max_tokens = False
+        self._seed = 0  # request-level seed for reproducibility where supported
+        self._params = {
+            "temperature": 0.0,
+            "max_completion_tokens": 2000,
+            "reasoning_effort": "minimal",
+            "seed": 0,
+        }
         self._sdk_version = getattr(openai, "__version__", "unknown")
+        # Cumulative token accounting so a small run can predict the full cost.
+        self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+
+    def _create(self, msgs: list[dict]):  # pragma: no cover - real-run path
+        import openai
+
+        while True:
+            kwargs: dict = {"model": self._model, "messages": msgs, "seed": self._seed}
+            if self._use_legacy_max_tokens:
+                kwargs["max_tokens"] = self._max_completion
+            else:
+                kwargs["max_completion_tokens"] = self._max_completion
+            if self._send_temperature:
+                kwargs["temperature"] = 0.0
+            if self._send_reasoning:
+                kwargs["reasoning_effort"] = self._reasoning_effort
+            try:
+                return self._client.chat.completions.create(**kwargs)
+            except openai.BadRequestError as exc:
+                msg = str(exc).lower()
+                # Adapt to whichever parameter the model rejects, then retry once.
+                if "max_completion_tokens" in msg and not self._use_legacy_max_tokens:
+                    self._use_legacy_max_tokens = True
+                elif "temperature" in msg and self._send_temperature:
+                    self._send_temperature = False
+                    self._params["temperature"] = "model-default"
+                elif "reasoning_effort" in msg and self._send_reasoning:
+                    self._send_reasoning = False
+                    self._params["reasoning_effort"] = "unsupported"
+                else:
+                    raise
 
     @property
     def config(self) -> dict:
@@ -239,12 +288,12 @@ class OpenAIAgent:
         for sql, feedback in history:
             msgs.append({"role": "assistant", "content": f"```sql\n{sql}\n```"})
             msgs.append({"role": "user", "content": feedback})
-        resp = self._client.chat.completions.create(
-            model=self._model,
-            max_tokens=self._params["max_tokens"],
-            temperature=self._params["temperature"],
-            messages=msgs,
-        )
+        resp = self._create(msgs)
+        u = getattr(resp, "usage", None)
+        if u is not None:
+            self.usage["prompt_tokens"] += getattr(u, "prompt_tokens", 0) or 0
+            self.usage["completion_tokens"] += getattr(u, "completion_tokens", 0) or 0
+            self.usage["calls"] += 1
         text = resp.choices[0].message.content or ""
         m = re.search(r"```sql\s*(.+?)\s*```", text, re.DOTALL | re.IGNORECASE)
         return (m.group(1) if m else text).strip()

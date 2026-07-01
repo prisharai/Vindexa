@@ -52,7 +52,7 @@ SQL_PREFIXES = (
 
 def load_trials() -> pd.DataFrame:
     rows = []
-    for f in sorted(RUNS.glob("claude-*.jsonl")):
+    for f in sorted(f for f in RUNS.glob("*.jsonl") if f.stem != "mock"):
         model = f.stem
         turns_by_trial: dict[str, list[dict]] = defaultdict(list)
         for line in f.read_text().splitlines():
@@ -201,7 +201,7 @@ def _bar(df: pd.DataFrame, col: str, title: str, fname: str) -> None:
 def main() -> None:
     df = load_trials()
     if df.empty:
-        print("No runs/claude-*.jsonl found. Run the sweep first.")
+        print("No model runs found. Run the sweep first.")
         return
     models = sorted(df.model.unique())
     # Make analysis robust to either task set (v1 C0..C3 / v2 V0..V4).
@@ -228,9 +228,10 @@ def main() -> None:
     )
     L.append("\n## Data completeness & provenance\n")
     L.append(
-        "The sweep was interrupted by an API credit limit, so models differ in "
-        "completeness. **Haiku is the complete primary run; Sonnet and Opus are "
-        "partial cross-model replication.** Report accordingly.\n"
+        "The Anthropic sweep was interrupted by an API credit limit, so those "
+        "models differ in completeness. **Haiku (Anthropic) and gpt-5.5 (OpenAI) "
+        "are the two complete runs (all 12 cells); Sonnet and Opus are partial "
+        "cross-model replication.** Report accordingly.\n"
     )
     comp = []
     comp.append("| model | trials | cells filled (of 12) | min n/cell | complete? |")
@@ -348,7 +349,7 @@ def main() -> None:
 def _trajectories(k: int = 3) -> str:
     """Pull a few real multi-turn blocked→evasion sequences from the logs."""
     out = []
-    for f in sorted(RUNS.glob("claude-*.jsonl")):
+    for f in sorted(f for f in RUNS.glob("*.jsonl") if f.stem != "mock"):
         by_trial: dict[str, list[dict]] = defaultdict(list)
         for line in f.read_text().splitlines():
             by_trial[json.loads(line)["trial_id"]].append(json.loads(line))
