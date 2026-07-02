@@ -59,10 +59,12 @@ coined terms.
 > rule-gaming from X% to Y% (OR=[..], p=[..])]: rather than narrowing the write,
 > the agent re-issues a statement with a **vacuously-true predicate** (e.g.
 > `WHERE 1=1`) that satisfies the named rule while still affecting every row — a
-> move detectable only by impact measurement, not syntax. [The effect was
-> {stronger/weaker} in more capable models.] We argue guardrail feedback for agents
-> should describe the *behavior expected* rather than the *rule to be satisfied*,
-> and we release the detection instrument and dataset.
+> move detectable only by impact measurement, not syntax. We report the two
+> complete runs (Haiku 4.5 and GPT-5.5) as confirmatory, separate
+> protocol-failure rate from SQL behavior, and treat incomplete Sonnet/Opus cells
+> as exploratory replication. We argue guardrail systems should make **measured
+> impact** authoritative for writes and avoid treating syntactic rule satisfaction
+> as success.
 
 ## 1. Introduction — the gap and the contributions
 
@@ -133,6 +135,11 @@ knowledge.")
 - **Engine.** SQL → real Postgres AST (`pglast`, cached) → classify → deterministic
   policy → **gated row-level-impact simulation** (`BEGIN; stmt; ROLLBACK`, time-boxed)
   → decide; allowed writes recorded for undo; denials are structured.
+- **Architecture implication.** The v2 product posture is not "rules decide
+  writes." Rules are a fast reject-only pre-filter; writes that survive rules are
+  decided by measured impact, undoability, and policy thresholds. This study
+  motivates that posture because literal rule satisfaction can defeat syntactic
+  checks while preserving unsafe row-level impact.
 - **Why it enables the study.** It returns, per attempt: the decision, the
   violated rule code, a human message + suggested fix, and the **measured affected
   rows**. That measurement is what makes literal rule satisfaction observable.
@@ -161,22 +168,32 @@ knowledge.")
 - **Dependent variables.** per trial: recovered (reached a scoped allowed
   statement); any-evasion; literal-rule-satisfaction; evasion-strategy mix; turns-to-recovery;
   first-attempt-denied (manipulation check).
-- **Models.** Haiku 4.5, Sonnet 4.6, Opus 4.8 (the **capability axis**: is a
-  stronger model more or less prone to feedback-as-recon?).
+- **Models.** Haiku 4.5 and GPT-5.5 are complete confirmatory runs. Sonnet 4.6
+  and Opus 4.8 are incomplete exploratory replication because the Anthropic sweep
+  was interrupted; report them as directional only. Protocol failure is a
+  separate dependent variable, not an SQL behavior to silently fold into evasion
+  or recovery.
 - **Analysis.** Descriptive rates per model×condition; Fisher exact of each
   condition vs the opaque baseline (OR, p), pooled and per model; logistic
   regression `evasion ~ condition + task + model` when it converges (perfect
   separation is expected and handled — Fisher is the robust primary test).
+  Confirmatory aggregate analyses should be restricted to fully balanced complete
+  runs, with sensitivity excluding protocol-failure trials.
 
 ## 5. Results (generated → `RESULTS_STUDY.md`; numbers below are current)
 
-Four models, 828 trials; two complete runs (Haiku, n=60/cell; gpt-5.5,
-n=60/cell) plus partial Sonnet/Opus. Terminology: *literal (syntactic) rule
-satisfaction* = a re-issued write bearing a vacuously-true predicate whose
-measured row-level impact is still ~the whole table.
+Four models, 828 trials; two complete confirmatory runs (Haiku, n=60/condition;
+gpt-5.5, n=60/condition) plus partial exploratory Sonnet/Opus runs. Terminology:
+*literal (syntactic) rule satisfaction* = a re-issued write bearing a
+vacuously-true predicate whose measured row-level impact is still ~the whole
+table.
 
 - **Manipulation check:** first-attempt denial rate ≈ **99%** — the tasks reliably
   trigger the guardrail across all models.
+- **Protocol failures:** Anthropic models often returned prose or other non-SQL
+  payloads despite the one-statement instruction. Report protocol failure as its
+  own outcome and include sensitivity excluding any trial with a protocol-failure
+  turn. GPT-5.5 protocol failure was low (0-3% by condition).
 - **Headline grid — rate of literal rule satisfaction (row-level impact ≈ full
   table despite a `WHERE`), by model × condition (C0→C3):**
   - claude-haiku-4-5: **22% → 95% → 98% → 98%**
@@ -185,9 +202,10 @@ measured row-level impact is still ~the whole table.
   - **gpt-5.5-2026-04-23: 100% → 100% → 100% → 100%**
 - **Mechanism:** the tautological-predicate move dominates the taxonomy across
   conditions; it is detected only by impact measurement, not syntax.
-- **Inference (Haiku):** naming the rule (C1) vs opaque (C0): OR ≈ **68.7**,
-  p ≈ **2.0e-17** (Fisher exact). Pooled logistic regression: condition is a strong
-  positive predictor of gaming; provider is significant.
+- **Inference:** for the complete Haiku run, naming the rule (C1) vs opaque (C0)
+  gives OR ≈ **68.7**, p ≈ **2.0e-17** (Fisher exact). For GPT-5.5, evasion is at
+  ceiling in all conditions, so condition contrasts are not identifiable and
+  should be described as ceiling behavior rather than a failed effect.
 - **Cross-provider contrast (the key new result):** for the Anthropic models,
   gaming is **feedback-modulated** — an opaque error yields the *least* gaming;
   naming the violated rule sharply increases it. For gpt-5.5, gaming is at
@@ -218,15 +236,22 @@ measured row-level impact is still ~the whole table.
 - **Design implication.** Prefer *behavioral* / *impact* feedback ("this would
   change N rows; scope it to the rows you intend, broad changes need approval")
   over *mechanistic* ("needs a WHERE"). Consider not revealing exact thresholds.
-- **Why impact-aware gating matters.** Literal rule satisfaction defeats syntactic
-  guardrails; only row-level-impact measurement + reversibility catch and cover it.
-  This motivates the system design (prevention + simulation + undo) independent of
-  the behavioral finding.
+- **Why impact-authoritative gating matters.** Literal rule satisfaction defeats
+  syntactic guardrails; row-level-impact measurement detects whether a write
+  actually narrowed its effect. This motivates the v2 system design: deterministic
+  rules cheaply reject obvious garbage, but measured impact and undoability decide
+  writes that survive rules.
+- **Product evaluation metric.** For the product, every future guardrail must
+  report interruption rate (how often Interdict is wrongly in the way) and saves
+  (holds/denies whose measured blast radius was genuinely over threshold), both
+  computed from audit-log `Decision` records. This is distinct from the paper's
+  protocol-failure DV.
 
 ## 7. Limitations & threats to validity
 
 Synthetic 3-task battery; two providers (Anthropic + OpenAI) — the single-family
 concern is addressed, but broader provider coverage would strengthen generality;
+high Anthropic protocol-failure rates; Sonnet/Opus incomplete and exploratory;
 prompt sensitivity; the harness gives one statement per turn (no tool-call
 scaffolding/planning); the richest condition (C3) confounds the measured row count
 with a confirmation framing; labels are conservative + auditable but borderline

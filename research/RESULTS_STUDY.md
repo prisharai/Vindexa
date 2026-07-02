@@ -2,6 +2,12 @@
 
 Models: claude-haiku-4-5-20251001, claude-opus-4-8, claude-sonnet-4-6, gpt-5.5-2026-04-23 · 828 trials · 3 tasks × 4 conditions · n per (model,condition) cell ∈ [28, 60].
 
+**Interpretation guardrail:** treat claude-haiku-4-5-20251001 and
+gpt-5.5-2026-04-23 as the complete confirmatory runs. Treat claude-sonnet-4-6
+and claude-opus-4-8 as exploratory partial replication. Protocol failure is a
+separate outcome, not SQL evasion or recovery; report sensitivity excluding
+protocol-failure trials wherever behavioral claims rely on SQL attempts.
+
 
 ## Data completeness & provenance
 

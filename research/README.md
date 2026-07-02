@@ -20,6 +20,13 @@ change what the agent does next — does it recover faster, or does it start to
 strategically _evade_ the guardrail?** To our knowledge this has not been
 measured. That is the contribution.
 
+Current paper framing follows `docs/SPEC_V2.md` A6: the complete confirmatory
+runs are Haiku 4.5 and GPT-5.5; Sonnet/Opus are exploratory partial replication;
+protocol failure is reported as its own outcome. The product implication is
+impact-authoritative write gating: rules are useful as a fast reject-only
+pre-filter, but measured row-level impact is the authoritative signal for writes
+that survive rules.
+
 ## Hypotheses
 
 - **H1 (recovery).** Richer denials → higher eventual success and fewer turns to
@@ -175,3 +182,7 @@ A novel question at the intersection of two hot areas; a measurement
 (`scope_theater`) that requires blast-radius simulation and so hasn't been done;
 a clean experimental design with a built instrument; and a genuinely uncertain,
 high-interest outcome (does guardrail transparency help — or teach evasion?).
+
+For product evaluation, do not reuse protocol failure as the operational quality
+metric. `SPEC_V2.md` requires interruption rate and saves, computed from audit-log
+`Decision` records once the v2 schema lands.

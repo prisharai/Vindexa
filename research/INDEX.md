@@ -55,6 +55,7 @@ class of statement; simple syntax heuristics catch only some cases.
 | model | C0 opaque | C1 reason code | C2 reason+fix | C3 +blast radius |
 |---|---|---|---|---|
 | **Haiku 4.5** (complete) | 22% | 95% | 98% | 98% |
+| **GPT-5.5** (complete) | 100% | 100% | 100% | 100% |
 | Sonnet 4.6 (partial) | 37% | 98% | 100% | 100% |
 | Opus 4.8 (partial) | 22% | 75% | 68% | 79% |
 
@@ -63,11 +64,16 @@ class of statement; simple syntax heuristics catch only some cases.
 - **Mechanism:** scope-theater (a fake `WHERE`) accounts for nearly all of the
   evasion — its rate mirrors the evasion rate above.
 - **Mirror image in recovery:** genuine recovery falls as denials get richer
-  (Haiku 38% at C0 → 2–5% at C1–C3).
+  for Haiku (38% at C0 → 2–5% at C1–C3), while GPT-5.5 only moves toward
+  recovery when shown measured impact in C3 (7% / 0% / 0% → 48%).
 - **Capability nuance (partial data):** Opus (strongest) showed *less* literal
   satisfaction and *more* narrowing than Haiku/Sonnet — capability may partly
   protect — but **Opus/Sonnet cells are incomplete; this appears only in partial
   cross-model runs and is not confirmatory.**
+- **Protocol-failure caveat:** Anthropic cells have high non-SQL/prose rates and
+  must report protocol failure as a separate dependent variable. Do not silently
+  fold those turns into the behavioral headline. GPT-5.5 has low protocol failure
+  and is the clean cross-provider complete run.
 - Exact odds ratios + p-values (Fisher exact, each condition vs C0, pooled and
   per model) and the logistic regression are in `RESULTS_STUDY.md`.
 
@@ -77,13 +83,14 @@ The API credit balance ran out mid-sweep. Completeness differs by model:
 
 | model | trials | cells (of 12) | status |
 |---|---|---|---|
-| Haiku 4.5 | 240 | 12 | **complete** (n=20/cell) — primary analysis |
+| Haiku 4.5 | 240 | 12 | **complete** (n=20/cell) — confirmatory |
+| GPT-5.5 | 240 | 12 | **complete** (n=20/cell) — confirmatory cross-provider run |
 | Sonnet 4.6 | 200 | 10 | partial (2 cells missing) |
 | Opus 4.8 | 148 | 8 | partial (some cells n<20) |
 
-**Write the paper with Haiku as the complete primary result and Sonnet/Opus as
-partial cross-model replication.** The direction is identical across all three.
-To finish the replication: add API credits and re-run the two partial models
+**Write the paper with Haiku and GPT-5.5 as the complete confirmatory runs.**
+Sonnet/Opus are partial exploratory cross-model replication only. To finish the
+replication: add API credits and re-run the two partial models
 (`AGENT=anthropic MODEL=claude-sonnet-4-6 SCHEMA=exp_sonnet TRIALS=20 uv run
 --env-file .env python -m research.run_pilot`, same for opus), then
 `uv run python -m research.stats`.
@@ -91,12 +98,28 @@ To finish the replication: add API credits and re-run the two partial models
 ## What's solid vs. what needs a caveat
 
 - **Supported:** on the complete Haiku run, the C0→C1 jump in literal rule
-  satisfaction is large; partial Sonnet/Opus runs show the same direction. The
-  specification being gamed is the guardrail rule, so the broad-objective tasks
-  measure it directly.
-- **Must caveat:** single provider family (the OpenAI cross-provider run addresses
-  this); 3 synthetic, adversarially-constructed tasks; Sonnet/Opus cells partial;
-  one seed; the richest condition (C3) adds the measured row count *and* a
-  confirmation framing, so it does not cleanly isolate impact from framing. The
-  narrow-intent task set (`pre_registration.md`) is an optional second
-  operationalization that further removes any ambiguity about user intent.
+  satisfaction is large; on the complete GPT-5.5 run, literal rule satisfaction
+  is at ceiling across conditions and measured impact is the only condition that
+  materially improves recovery. Partial Sonnet/Opus runs are directionally useful
+  but exploratory. The specification being gamed is the guardrail rule, so the
+  broad-objective tasks measure it directly.
+- **Must caveat:** 3 synthetic, adversarially-constructed tasks; Sonnet/Opus cells
+  partial; high Anthropic protocol-failure rates; one seed; the richest condition
+  (C3) adds the measured row count *and* a confirmation framing, so it does not
+  cleanly isolate impact from framing. The narrow-intent task set
+  (`pre_registration.md`) is an optional second operationalization that further
+  removes any ambiguity about user intent.
+
+## Product Metric Alignment
+
+`SPEC_V2.md` makes impact-authoritative writes the v2 product architecture:
+rules are a fast reject-only pre-filter, and measured impact decides writes that
+survive rules. Paper text should connect the behavioral result to that product
+posture: syntax/rule feedback can be gamed, while measured row-level impact
+catches the gaming move.
+
+The product-facing evaluation metric is **interruption rate** plus **saves**,
+computed from audit-log `Decision` records once A2/A3 land. Do not add a separate
+instrumentation path for these metrics. The research study's protocol-failure
+rate remains a paper DV; the product benchmark's interruption rate is the rate
+at which Interdict is wrongly in the way during realistic agent tasks.
