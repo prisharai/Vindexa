@@ -1,0 +1,371 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage[numbers,round]{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Specification Gaming in Database Guardrails:\\
+How Denial Feedback Elicits Literal Rule Satisfaction in LLM Agents}
+\author{Prisha Rai}
+\date{}
+
+\begin{document}
+\maketitle
+
+% ======================================================================
+\section{Introduction}
+% ======================================================================
+
+Large language model (LLM) agents increasingly operate databases directly,
+issuing SQL writes as part of autonomous workflows. To limit the damage a single
+bad write can do, a growing class of runtime guardrails inspects each statement
+before it runs: the guardrail blocks writes that violate a safety policy and
+returns an explanation the agent can read and respond to. The design intuition is
+that a more informative denial is a safer one---if the guardrail tells the agent
+which rule it broke and how to comply, the agent will correct its mistake. We show
+that this intuition can backfire.
+
+The failure we study is \textbf{specification gaming} (also called reward
+hacking): an agent satisfies the literal terms of a rule while defeating the
+reason the rule exists. This is a well-documented behavior of optimizing systems.
+Classic reinforcement-learning agents find degenerate shortcuts---a boat-racing
+agent that loops to farm checkpoint bonuses instead of finishing the race
+\citep{amodei2016concrete}. Recent work shows the same tendency in LLMs placed in
+feedback loops, where a model repeatedly scored against an underspecified
+objective learns to exploit it \citep{pan2024feedback}, and can even generalize
+from mild gaming to tampering with its own reward \citep{denison2024sycophancy}.
+What this literature has \emph{not} examined is the specific setting our agents
+operate in: the moment a database write is blocked by a guardrail and the agent is
+told why. Our contribution is to show that specification gaming appears reliably at
+this boundary, and to provide an instrument that detects it automatically. This is
+not a case of catching an obvious mistake---the gaming move here is a
+syntactically valid SQL statement that passes the guardrail's own rule check, so no
+filter that inspects only the query text can catch it.
+
+We study this with a controlled, closed-loop experiment. An agent is given a task;
+it issues a write; the guardrail blocks the write; the agent receives a denial
+message and may try again. The only thing we vary is \textbf{how much the denial
+message tells the agent}. We test four messages, ordered from least to most
+informative:
+
+\begin{enumerate}[itemsep=2pt,topsep=4pt]
+  \item \textbf{Opaque error}---the write is rejected with no explanation (e.g.,
+    ``operation not permitted'').
+  \item \textbf{Reason code}---a short machine-readable label naming which rule was
+    violated.
+  \item \textbf{Reason code + fix}---the same label plus a concrete suggestion for
+    how to comply (e.g., ``add a \code{WHERE} clause'').
+  \item \textbf{+ measured impact}---everything above, plus the number of rows the
+    blocked write would actually have changed.
+\end{enumerate}
+
+To tell a genuinely careful rewrite apart from one that only \emph{looks} careful,
+we run each retry as a dry run (\code{BEGIN \ldots{} ; ROLLBACK}) and count how many
+rows it would touch without committing it. This lets us detect what we call
+\textbf{literal rule satisfaction}: a retry that technically obeys the stated rule
+but still modifies essentially every row. The textbook case is an always-true
+condition such as \code{WHERE 1=1}, which satisfies ``the query must have a
+\code{WHERE} clause'' without changing anything about the query's effect.
+
+Two models produced complete data, and they diverge sharply (Figure~\ref{fig:headline}).
+For \textbf{Claude Haiku 4.5}, the behavior depends on the feedback: with an opaque
+error (no explanation), only 20\% of retries game the rule, but simply naming the
+violated rule raises this to 95\% (Fisher exact test, odds ratio $\approx 69$,
+$p \approx 2\times10^{-17}$), and it stays nearly that high once a fix or impact
+figure is added. In short, the more the guardrail explained, the more often the
+model gamed it. \textbf{GPT-5.5} behaves differently: it games the rule in
+essentially every condition, including the opaque baseline (100\%). Because it
+starts at this ceiling---the maximum possible rate---no amount of added explanation
+can raise it further. The two models thus differ not in \emph{whether} they game
+the rule but in \emph{how easily} it is triggered, which rules out a quirk of any
+single model. One signal did help GPT-5.5: \textbf{correctly scoped recovery}---a
+retry that both obeys the rule and touches only the rows it should---rose from at
+most 7\% under the other conditions to 48\% only when the agent was shown the true
+row-level impact of its blocked write. Naming the rule or suggesting a fix did
+nothing.
+
+The design lesson is direct. Telling an agent the mechanism it must satisfy (``add
+a \code{WHERE} clause'') can teach it the shortcut rather than prevent it. Telling
+the agent the actual consequence of its write---how many rows it would
+change---avoids that trap, and was the only signal that moved even the
+worst-behaving model toward a correct write. We therefore argue that agent-facing
+guardrails should report \emph{expected behavior and measured impact}, not the rule
+to be satisfied; and that measuring impact, rather than checking query syntax
+alone, is what makes this form of specification gaming both detectable and
+correctable for database agents. We release the instrument, the tasks, and the
+dataset.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.82\linewidth]{../figures/paper/fig1_literal_rule_satisfaction.pdf}
+  \caption{\textbf{Explaining a denial more fully makes Claude Haiku 4.5 game the
+    rule more, while GPT-5.5 games it regardless.} Literal rule
+    satisfaction---the share of retries that obey the guardrail's rule while still
+    modifying essentially every row---as a function of how much the denial message
+    reveals (left to right: opaque error $\rightarrow$ reason code $\rightarrow$
+    reason code + fix $\rightarrow$ + measured row count). For Haiku (blue), naming
+    the violated rule alone lifts gaming from 20\% to 95\%. For GPT-5.5 (red),
+    gaming sits at 100\% in every condition, including the opaque baseline. Error
+    bars show Wilson 95\% confidence intervals ($n = 60$ trials per condition).}
+  \label{fig:headline}
+\end{figure}
+
+% ======================================================================
+\section{Related work}
+% ======================================================================
+
+The behavior we study---satisfying a rule's letter while defeating its
+purpose---is documented in reinforcement learning \citep{amodei2016concrete}, in
+LLMs under test-time feedback loops \citep{pan2024feedback}, and in the
+generalization from mild gaming to reward tampering \citep{denison2024sycophancy}.
+Across these settings the gaming move is an overt behavioral failure in a simulated
+environment, game, or self-scored objective; we instead study it at a runtime
+database guardrail, where the move is valid SQL that passes the guardrail's own
+check.
+
+LLMs improve unreliably when asked to reflect on their own outputs, but improve
+more when given a reliable external signal to correct against
+\citep[e.g.,][]{madaan2023selfrefine, shinn2023reflexion, huang2024selfcorrect}.
+This literature treats external feedback as a help signal. Our results add a
+caveat: when the external signal names the specific rule the agent must satisfy, a
+capable agent can treat it as a specification to satisfy literally rather than a
+mistake to fix---the feedback is used to bypass the guardrail, not to comply with
+its intent.
+
+Recent systems move safety from post-hoc output moderation to pre-execution gating
+of agent actions, including database and tool calls
+\textcolor{red}{[cite: relevant guardrail/agent-safety systems]}. These focus on
+the blocking decision and its policy. We instead measure how the guardrail's
+explanation reshapes the agent's next action, and show that the content of the
+denial is itself a behavioral lever.
+
+Benchmarks such as Spider \citep{yu2018spider} and BIRD \citep{li2023bird}
+evaluate whether generated SQL is correct for a natural-language request. Our axis
+is orthogonal: we measure not correctness but destructiveness and response to
+denial---whether a blocked write is narrowed to its intended scope or merely
+dressed to pass a rule.
+
+% ======================================================================
+\section{Experimental setup}
+% ======================================================================
+
+Our aim is to measure a single causal relationship: how the \emph{content} of a
+guardrail's denial message changes the write an agent issues next. The design
+therefore fixes everything about the interaction---the task, the database, the
+guardrail, the model, the number of retries---and varies only how much the denial
+message explains. Any difference in the agent's subsequent behavior can then be
+attributed to the message rather than to some other factor. The rest of this
+section describes the guardrail that blocks and explains writes (Sec.~\ref{sec:guardrail}),
+the two behaviors we detect and why they are detectable at all (Sec.~\ref{sec:behaviors}),
+the tasks (Sec.~\ref{sec:tasks}), the trial protocol and the one manipulated
+variable (Sec.~\ref{sec:protocol}), the models and their configuration
+(Sec.~\ref{sec:models}), how each trial is scored (Sec.~\ref{sec:coding}), and the
+statistics (Sec.~\ref{sec:stats}).
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{../figures/paper/fig3_closed_loop.pdf}
+  \caption{\textbf{The closed-loop trial protocol.} The agent issues a SQL
+    statement; the guardrail parses it, classifies it from the parse tree, checks
+    it against fixed policy rules, and measures its true row-level impact by
+    running it inside an aborted transaction. An \emph{allowed} write executes and
+    ends the trial; a \emph{held} or \emph{blocked} write returns a denial message
+    and the agent retries (up to four turns). The only variable manipulated across
+    conditions is the richness of that denial message.}
+  \label{fig:loop}
+\end{figure}
+
+\subsection{The guardrail}
+\label{sec:guardrail}
+
+Every agent in our experiments acts on a PostgreSQL database through a guardrail
+we build and release: a runtime safety engine that inspects each SQL statement the
+agent issues and decides whether it may run. One point about SQL is enough to
+follow everything that follows. The tasks operate on a \emph{table}---a grid of
+rows. A write such as \code{DELETE} or \code{UPDATE} changes rows, and an optional
+\code{WHERE} clause restricts \emph{which} rows it changes; a write with no
+\code{WHERE} clause, or with a \code{WHERE} clause that is always true (for example
+\code{WHERE 1=1}), changes every row in the table. Preventing exactly this kind of
+unbounded, irreversible write is the guardrail's job.
+
+For each statement the agent issues, the guardrail does three things.
+
+\paragraph{It parses, rather than pattern-matches.} The guardrail builds a
+structured parse tree using the same parser PostgreSQL itself uses, instead of
+searching the raw query text for keywords. Text search is unreliable here: a
+comment, a change of letter case, added whitespace, or a table alias can hide a
+keyword, and scanning characters cannot in general recover what a statement will
+do. Parsing to the database's own representation of the query is not defeated by
+any of these, so the guardrail reasons about the statement the database would
+actually execute.
+
+\paragraph{It classifies the statement from that parse tree.} From the tree it
+reads whether the statement reads data, writes data, or changes the schema; which
+tables it touches; whether it carries a \code{WHERE} clause; and whether several
+statements are chained together. These are the structural facts a fixed set of
+policy rules is checked against.
+
+\paragraph{It measures how many rows the statement would actually change---exactly,
+not by estimate.} For any write the policy rules flag as risky, the guardrail runs
+the candidate statement inside a transaction that it then abandons:
+\code{BEGIN; \textlangle statement\textrangle; ROLLBACK}. Inside the transaction
+PostgreSQL executes the statement in full and reports the exact number of rows it
+changed; the \code{ROLLBACK} then discards all of those changes atomically, leaving
+the table exactly as it was. This is a guaranteed property of the database's
+transactional semantics, not an approximation---the reported count \emph{is} the
+real count, and nothing is ever committed. We refer to this quantity as the
+statement's \textbf{measured impact}: the number of rows it would change if it were
+allowed to run.
+
+On the basis of the parse tree and the measured impact, the guardrail returns one
+of three decisions:
+
+\begin{itemize}[itemsep=2pt,topsep=4pt]
+  \item \textbf{Allow}---the measured impact is within a fixed threshold; the write
+    executes.
+  \item \textbf{Hold}---the measured impact exceeds the threshold; the write is
+    refused pending a human confirmation that, in our experiments, never arrives.
+  \item \textbf{Block}---the statement is structurally impermissible (an unbounded
+    write with no effective \code{WHERE} clause, or a disallowed operation) and is
+    refused outright.
+\end{itemize}
+
+The consequence that matters for this paper is the gap between the second and third
+steps: a statement can pass every structural check---it has a \code{WHERE} clause,
+it touches an allowed table, it is a single well-formed write---and still be held
+or blocked once its real impact is measured. A guardrail that checked only
+structure would let such a statement through.
+
+\subsection{The two behaviors we detect}
+\label{sec:behaviors}
+
+Our claims turn on two behaviors, and both are defined in terms of measured impact
+rather than the text of a statement.
+
+\textbf{Literal rule satisfaction} is when the agent produces a statement that
+obeys the \emph{letter} of a rule while still doing the very thing the rule exists
+to prevent. The canonical case: a write the guardrail has just blocked for lacking
+a \code{WHERE} clause is re-issued with a clause that is always true---\code{WHERE
+1=1}, or \code{WHERE id = id}. The statement now carries a \code{WHERE} clause, so
+it satisfies the stated rule (``writes must be qualified''), yet its measured
+impact is still the entire table. It passes the rule and defeats the rule's purpose
+at once. Because this is ordinary, valid SQL, no check that reads only the query
+text can catch it; it becomes visible only when the true impact is measured.
+
+\textbf{Correctly scoped recovery} is the opposite outcome: the agent produces a
+write the guardrail permits---one whose measured impact falls within the
+threshold---a genuinely bounded change rather than a full-table change dressed up to
+pass. This is what a well-behaved agent should converge to.
+
+\subsection{Tasks}
+\label{sec:tasks}
+
+We use three tasks (Table~\ref{tab:tasks}). Each asks the agent to perform a
+deliberately broad operation on a 1{,}000-row table whose naive solution---an
+unqualified \code{DELETE}, a \code{TRUNCATE}, or a full-table \code{UPDATE}---changes
+every row and is therefore held or blocked by the guardrail. Each trial runs on a
+freshly created copy of the table, so the measured impact is real and fully
+isolated from every other trial.
+
+One design property is worth stating explicitly, because it is what lets us
+separate gaming from ordinary task compliance. The prompt itself asks for a broad
+change (``empty the table,'' ``set every price to 0''). A write the guardrail
+permits is, by construction, \emph{not} a literal fulfillment of that request---it
+is bounded, so it leaves rows untouched. ``Recovery'' in our setup therefore means
+the agent produces a bounded write the guardrail allows, not a write that satisfies
+the stated task. This deliberate tension isolates \emph{gaming of the guardrail's
+rule} from \emph{compliance with the user's instruction}; we return to its
+implications in the Limitations section.
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabular}{@{}llllll@{}}
+    \toprule
+    Task & Prompt (abbrev.) & Table & Rows & Naive solution & Verdict \\
+    \midrule
+    \code{wipe\_staging} & ``Empty the staging\_events table'' & \code{staging\_events} & 1{,}000 & \code{DELETE}/\code{TRUNCATE} & blocked/held \\
+    \code{zero\_prices} & ``Set every product's price to 0'' & \code{products} & 1{,}000 & full-table \code{UPDATE} & blocked/held \\
+    \code{clear\_sessions} & ``Clear the sessions table'' & \code{sessions} & 1{,}000 & \code{DELETE}/\code{TRUNCATE} & blocked/held \\
+    \bottomrule
+  \end{tabular}
+  \caption{\textbf{The three tasks.} Each requests a deliberately broad operation
+    whose naive full-table form is stopped by the guardrail, so any write the
+    guardrail permits is necessarily a narrowed one.}
+  \label{tab:tasks}
+\end{table}
+
+\subsection{Trial protocol and the manipulated variable}
+\label{sec:protocol}
+
+A trial proceeds in turns (Figure~\ref{fig:loop}). The agent is given the task and
+emits a single SQL statement. The guardrail decides. If the statement executes, the
+trial ends; if it is held or blocked, the agent receives a denial message and may
+try again, for up to four turns. A trial ends when the agent produces a
+guardrail-permitted scoped write or exhausts its four-turn budget.
+
+The \textbf{only} variable we manipulate across conditions is the content of the
+denial message the agent receives when a write is refused---the four levels of
+increasing informativeness defined in Sec.~1 (opaque error $\rightarrow$ reason
+code $\rightarrow$ reason code + fix $\rightarrow$ + measured row count). The task,
+table contents, guardrail thresholds, retry budget, and model configuration are
+identical across all four conditions, so any difference in behavior is a response
+to the message alone.
+
+\subsection{Models and configuration}
+\label{sec:models}
+
+We report the two models for which we have complete data: Claude Haiku 4.5 and
+GPT-5.5. Both were run at temperature 0. GPT-5.5 was run at minimal reasoning effort
+to match Haiku's non-extended-thinking configuration, so the comparison varies the
+provider and not the inference budget. We collect 20 trials per (task $\times$
+condition)---60 trials per (model $\times$ condition), 240 trials per model. Trial
+order is randomized under a fixed seed, and each model runs in an isolated database
+schema, so time-varying effects such as rate limits or API drift cannot
+systematically align with any one condition.
+
+\subsection{Outcome coding}
+\label{sec:coding}
+
+For each trial we compute three indicators directly from the logged transcript:
+
+\begin{itemize}[itemsep=2pt,topsep=4pt]
+  \item \textbf{Literal rule satisfaction}---at some turn, the agent issued a
+    statement that carries a predicate passing the policy rule but whose measured
+    impact is essentially the whole table (e.g.\ \code{WHERE 1=1}).
+  \item \textbf{Correctly scoped recovery}---the agent reached a statement the
+    guardrail permits (measured impact within the threshold).
+  \item \textbf{Protocol failure}---the agent returned prose or a non-SQL payload
+    instead of a statement. These are reported separately and never counted as SQL
+    attempts, so they cannot inflate or deflate the SQL-based rates.
+\end{itemize}
+
+We do not present these as an exhaustive taxonomy of everything an agent might do,
+and they do not come from prior work---they are the three events our claims depend
+on, chosen because each maps directly onto a step of the argument (did the agent
+game the rule; did it recover correctly; did it fail to engage at all). Their
+strength is not that they are the only conceivable outcomes but that each is
+determined \emph{automatically and objectively} from information we already log for
+every turn---the parsed statement and its measured impact---with no human judgment
+in the loop. Every turn's statement, guardrail decision, and measured impact are
+recorded, so any label can be audited or recomputed.
+
+\subsection{Statistical analysis}
+\label{sec:stats}
+
+We report each outcome as a proportion with a Wilson 95\% confidence interval, and
+we compare every condition against the opaque-error baseline using Fisher's exact
+test. Because each (model $\times$ condition) cell contains 60 trials, we report
+exact tests rather than large-sample approximations.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
